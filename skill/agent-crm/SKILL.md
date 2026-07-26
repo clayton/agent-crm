@@ -1,6 +1,6 @@
 ---
 name: agent-crm
-description: Store and retrieve project-isolated B2B prospects, research, outreach state, notes, follow-up tasks, and CRM timelines in the machine-local Agent CRM. Use when researching prospects, recording cold email/call work, managing customer discovery, changing pipeline stages, or checking explicitly scheduled follow-ups.
+description: Operate a project-isolated, machine-local B2B CRM for prospects, opportunities, forecasting, revenue reviews, research, outreach state, notes, follow-ups, and timelines. Use when managing pipeline, deciding what to do next, checking forecast health, preventing dropped work, or preparing top-of-funnel research and outreach.
 ---
 
 # Agent CRM
@@ -21,6 +21,12 @@ Use the MCP tools named `crm_*` when available. Otherwise call `crm`; it emits J
 - Do not run `inbox` automatically at session start. Run it only when explicitly requested or as part of a deliberately scheduled follow-up job.
 - When asked for today's priorities or the most important things to do, call `crm_next_actions` or `crm next-actions PROJECT`. Present the returned `actions` as a concise numbered list; preserve the reason, due date, prospect/company, and stage when useful.
 - When asked to show the pipeline, call `crm_pipeline` or `crm pipeline PROJECT`. Present stages in returned order with their prospect counts, and list the prospects within each stage. Include terminal stages only when the user asks for closed outcomes or pipeline history.
+- Run `crm_bootstrap` or `crm bootstrap PROJECT` when the user asks to onboard, configure, audit setup, or refresh CRM readiness. It is safe to re-run. Writes still require an actor.
+- A prospect is not forecastable merely because it exists. Use `crm_qualify_opportunity` only when amount, expected close date, and a concrete next step are supportable.
+- For revenue questions, use `crm_forecast` for the numbers, `crm_conversions` for historical conversion context, and `crm_cro_review` when the user wants assumptions challenged. Preserve warnings and evidence; do not improve the forecast by inventing missing data.
+- Use `crm_pipeline_risks` to find unscheduled, unowned, stale, overdue, uncontactable, or incomplete work. Create repair tasks only when explicitly requested.
+- Use `crm_sdr_queue` to prioritize top-of-funnel work. Use `crm_research_brief` before enrichment or research and `crm_outreach_brief` before drafting outreach.
+- Research and outreach briefs do not authorize contacting anyone. Agent CRM remains a system of record and preparation tool.
 - Read tools return structured data. Choose formatting that fits the conversation rather than reproducing raw JSON.
 
 ## CLI examples
@@ -56,6 +62,12 @@ crm prospect transition pro_ID researching --expected-version 1
 crm inbox --project imago --actor buzz:outreach
 crm next-actions imago
 crm pipeline imago
+crm bootstrap imago --target-amount 100000 --target-period 2026-Q3 --currency USD --actor codex
+crm opportunity qualify pro_ID --amount 25000 --expected-close-at 2026-09-15T00:00:00Z --next-step "Book decision call" --actor codex
+crm forecast imago --period 2026-Q3
+crm review imago --period 2026-Q3
+crm risks imago
+crm sdr-queue imago
 ```
 
 Use `crm --help` and subcommand `--help` for the complete CLI contract.

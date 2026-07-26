@@ -2,7 +2,7 @@
 
 An open-source CRM built for agents, not dashboards.
 
-Agent CRM keeps track of companies, contacts, prospects, research, follow-ups, and sales-pipeline state like a traditional CRM. The difference is intentional: there is no graphical interface. Agents work with it directly through a JSON CLI or typed MCP tools.
+Agent CRM keeps track of companies, contacts, prospects, opportunities, research, follow-ups, forecasts, and sales-pipeline state. It also points out unsupported forecasts and work that is falling through the cracks. The difference is intentional: there is no graphical interface. Agents work with it directly through a JSON CLI or typed MCP tools.
 
 Data stays local in SQLite, and both interfaces use the same application service.
 
@@ -15,6 +15,8 @@ Most CRMs are designed around humans clicking through screens. Agent CRM is desi
 - **No interface:** Use the CLI or MCP tools.
 - **Local by default:** SQLite is the source of truth.
 - **Pipeline-aware:** Track prospects from identification through won, lost, or do-not-contact.
+- **Revenue-aware:** Forecast weighted, best-case, commit, and closed-won revenue.
+- **Constructively skeptical:** A critical CRO review challenges weak assumptions with record-level evidence.
 - **Built for coordination:** Project isolation, immutable activity history, and optimistic version checks help multiple agents work safely.
 - **System of record only:** It logs outreach, but never sends messages or contacts anyone.
 
@@ -41,10 +43,12 @@ By default, data is stored at `~/.codex/memories/agent-crm/crm.sqlite3`. Set `CR
 - Projects that isolate separate pipelines
 - Companies and contacts
 - Prospects and pipeline stages
+- Forecastable opportunities, amounts, close dates, probabilities, and next steps
 - Sourced research notes
 - Follow-up tasks and due dates
 - Email, call, message, and meeting logs
 - Immutable activity history
+- Revenue targets and re-runnable project readiness checks
 
 The default pipeline is:
 
@@ -91,6 +95,78 @@ Two agent-oriented read commands make common reviews direct:
 ```
 
 The equivalent MCP tools are `crm_next_actions` and `crm_pipeline`. They return structured data so the calling agent can format it naturally for the conversation.
+
+## Bootstrap and onboarding
+
+Bootstrap configures forecast defaults and returns a readiness checklist. It is deliberately safe to re-run: unchanged settings are not rewritten and no records are duplicated.
+
+```bash
+./bin/crm bootstrap pipeline \
+  --target-amount 100000 \
+  --target-period 2026-Q3 \
+  --currency USD \
+  --default-owner codex \
+  --actor codex
+```
+
+The result identifies missing configuration, unowned prospects, incomplete opportunities, and the next setup steps. The MCP equivalent is `crm_bootstrap`.
+
+## Forecasting and honest revenue reviews
+
+A prospect becomes forecastable only when explicitly qualified with an amount, expected close date, and concrete next step:
+
+```bash
+./bin/crm opportunity qualify pro_ID \
+  --amount 25000 \
+  --expected-close-at 2026-09-15T00:00:00Z \
+  --next-step "Schedule the decision call" \
+  --forecast-category commit \
+  --probability 80 \
+  --actor codex
+
+./bin/crm forecast pipeline --period 2026-Q3
+./bin/crm conversions pipeline
+./bin/crm review pipeline --period 2026-Q3
+```
+
+`forecast` returns open pipeline, weighted forecast, best case, commit, closed-won revenue, target attainment, coverage, and missing forecast data. `conversions` derives directional stage conversion rates from the immutable activity history.
+
+`review` is the critical CRO adversary. It flags unsupported commit claims, weak coverage, overdue or expired next steps, incomplete forecast evidence, and other assumptions that deserve scrutiny. Findings include severity, underlying records, and a recommended corrective action.
+
+The MCP equivalents are `crm_qualify_opportunity`, `crm_forecast`, `crm_conversions`, and `crm_cro_review`.
+
+## Staying ahead of dropped work
+
+The v0.3 action engine ranks work across tasks and pipeline risks. Every recommendation carries a score, plain-language reasons, a suggested action, and an effort estimate.
+
+```bash
+./bin/crm next-actions pipeline
+./bin/crm next-actions pipeline --mode close --time-budget 45
+./bin/crm next-actions pipeline --mode pipeline_build
+./bin/crm risks pipeline
+```
+
+`risks` finds unowned, unscheduled, stale, overdue, uncontactable, expired, and forecast-incomplete records. It is read-only by default. To explicitly create idempotent repair tasks:
+
+```bash
+./bin/crm risks pipeline --create-tasks --actor codex
+```
+
+The MCP equivalent is `crm_pipeline_risks`.
+
+## SDR workbench
+
+Agent CRM prepares top-of-funnel work without sending messages:
+
+```bash
+./bin/crm sdr-queue pipeline
+./bin/crm research-brief pro_ID
+./bin/crm outreach-brief pro_ID
+```
+
+The SDR queue prioritizes enrichment and outreach preparation using fit, contactability, and research completeness. Research briefs separate sourced facts from unsourced context and missing information. Outreach briefs combine verified context, prior interactions, prerequisites, and a suggested angle while preserving the system-of-record-only boundary.
+
+The MCP equivalents are `crm_sdr_queue`, `crm_research_brief`, and `crm_outreach_brief`.
 
 ## Agent skill
 

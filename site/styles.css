@@ -400,8 +400,9 @@ h1 span::after {
   display: block;
   min-height: 64px;
   color: var(--purple);
-  font-size: 2.5rem;
+  font-size: clamp(1.45rem, 3vw, 2.25rem);
   font-weight: 800;
+  letter-spacing: -0.04em;
 }
 
 .feature-purple .feature-symbol {
@@ -432,6 +433,63 @@ h1 span::after {
 
 .feature-coral p {
   color: #4a2734;
+}
+
+.proof {
+  margin-bottom: var(--space-32);
+  padding-block: var(--space-16);
+  border-block: var(--border);
+}
+
+.proof-heading {
+  display: grid;
+  grid-template-columns: 1fr 2.2fr;
+  gap: var(--space-8);
+  margin-bottom: var(--space-12);
+}
+
+.proof-heading h2 {
+  max-width: 850px;
+  margin: 0;
+  font-size: clamp(2.2rem, 4.2vw, 3.8rem);
+  letter-spacing: -0.045em;
+  line-height: 1;
+}
+
+.proof-list {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border: var(--border);
+  background: var(--ink);
+  gap: 2px;
+}
+
+.proof-list > div {
+  min-height: 240px;
+  padding: var(--space-8);
+  background: var(--white);
+}
+
+.proof-list span {
+  display: block;
+  margin-bottom: var(--space-8);
+  color: var(--purple);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 2.5rem;
+  font-weight: 800;
+}
+
+.proof-list p {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.proof-list strong {
+  display: block;
+  margin-bottom: var(--space-2);
+  color: var(--ink);
+  font-size: 1.15rem;
 }
 
 .cta {
@@ -544,6 +602,7 @@ footer p {
 
   .manifesto,
   .section-heading,
+  .proof-heading,
   .cta {
     grid-template-columns: 1fr;
   }
@@ -553,6 +612,10 @@ footer p {
   }
 
   .section-heading {
+    gap: var(--space-3);
+  }
+
+  .proof-heading {
     gap: var(--space-3);
   }
 
@@ -614,6 +677,10 @@ footer p {
   }
 
   .feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .proof-list {
     grid-template-columns: 1fr;
   }
 

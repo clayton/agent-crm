@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Agent CRM is an open-source, local-first CRM built for agents—not dashboards.">
+    <meta name="description" content="Agent CRM is an open-source, local-first revenue operating system built for agents—not dashboards.">
     <meta name="theme-color" content="#6d36f2">
     <meta property="og:title" content="Agent CRM — CRM, without the screen.">
-    <meta property="og:description" content="An open-source CRM built for agents, not dashboards.">
+    <meta property="og:description" content="An open-source pipeline, forecast, and revenue operating system built for agents.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://crmemento.com">
     <title>Agent CRM — CRM, without the screen.</title>
@@ -33,7 +33,7 @@
         <div class="hero-copy">
           <p class="eyebrow">Open source · Local first · MIT</p>
           <h1 id="hero-title">CRM, without<br>the <span>screen.</span></h1>
-          <p class="lede">A sales pipeline your agents can actually use. Track prospects, research, follow-ups, and every decision—through a CLI or MCP, not another dashboard.</p>
+          <p class="lede">A revenue system your agents can actually use. Prioritize the next move, catch dropped work, forecast honestly, and prepare outreach—through a CLI or MCP, not another dashboard.</p>
           <div class="hero-actions">
             <a class="button button-primary" href="https://github.com/clayton/agent-crm">
               View on GitHub <span aria-hidden="true">↗</span>
@@ -50,14 +50,14 @@
               <span class="status"><i></i> local</span>
             </div>
             <div class="terminal-body">
-              <p><span class="prompt">agent›</span> find prospects needing attention</p>
+              <p><span class="prompt">agent›</span> will we hit the quarter?</p>
               <div class="terminal-response">
-                <span class="muted">2 records</span>
-                <p><b>Northstar Labs</b><br><span>stage: qualified</span><br><span>next: prepare outreach</span></p>
-                <p><b>Juniper Systems</b><br><span>stage: replied</span><br><span>next: book discovery call</span></p>
+                <span class="muted">CRO review · Q3</span>
+                <p><b>Verdict: at risk</b><br><span>coverage: 1.8× target</span><br><span>commit: $84,000</span></p>
+                <p><b>Unsupported optimism</b><br><span>42% of commit has no next step</span><br><span>3 close dates pushed twice</span></p>
               </div>
-              <p class="typed-line"><span class="prompt">agent›</span> <span data-type>move Northstar to ready_to_contact</span><span class="cursor" aria-hidden="true"></span></p>
-              <p class="success">✓ pipeline updated · version 4</p>
+              <p class="typed-line"><span class="prompt">agent›</span> <span data-type>give me the 3 best actions</span><span class="cursor" aria-hidden="true"></span></p>
+              <p class="success">✓ ranked by urgency, evidence, and revenue at risk</p>
             </div>
           </div>
         </div>
@@ -65,7 +65,7 @@
 
       <section class="manifesto" aria-label="Product principle">
         <p class="manifesto-label">The premise</p>
-        <p class="manifesto-copy">Traditional CRMs wait for a human to click. <strong>Agent CRM gives your agents a shared memory and a safe way to act.</strong></p>
+        <p class="manifesto-copy">Traditional CRMs repeat whatever the seller typed. <strong>Agent CRM helps your agents act—and challenges whether the forecast deserves belief.</strong></p>
       </section>
 
       <section class="features" id="how-it-works" aria-labelledby="features-title">
@@ -75,32 +75,54 @@
         </div>
         <div class="feature-grid">
           <article class="feature feature-purple">
-            <span class="feature-symbol" aria-hidden="true">↳</span>
-            <h3>A real pipeline</h3>
-            <p>Move prospects from identified to won with explicit, validated transitions and terminal exits.</p>
+            <span class="feature-symbol" aria-hidden="true">NEXT</span>
+            <h3>Know what to do next</h3>
+            <p>Get 3–5 explainable actions ranked across urgency, effort, pipeline stage, and revenue at risk.</p>
           </article>
           <article class="feature feature-coral">
-            <span class="feature-symbol" aria-hidden="true">{ }</span>
-            <h3>Made for agents</h3>
-            <p>Structured JSON through the CLI and typed MCP tools give agents a clean, predictable contract.</p>
+            <span class="feature-symbol" aria-hidden="true">RISK</span>
+            <h3>Nothing falls through</h3>
+            <p>Find unowned, unscheduled, stale, overdue, uncontactable, and incomplete pipeline records.</p>
           </article>
           <article class="feature">
-            <span class="feature-symbol" aria-hidden="true">◎</span>
-            <h3>Local by default</h3>
-            <p>Your companies, contacts, notes, tasks, and interactions stay in a local SQLite database.</p>
+            <span class="feature-symbol" aria-hidden="true">FORECAST</span>
+            <h3>Forecast revenue</h3>
+            <p>Track amount, close timing, next steps, probabilities, commit, best case, weighted forecast, and target coverage.</p>
           </article>
           <article class="feature">
-            <span class="feature-symbol" aria-hidden="true">⌁</span>
-            <h3>Safe to share</h3>
-            <p>Project isolation, immutable history, and version checks help multiple agents coordinate without silent overwrites.</p>
+            <span class="feature-symbol" aria-hidden="true">CRO</span>
+            <h3>Meet the CRO adversary</h3>
+            <p>An evidence-backed review calls out weak coverage, unsupported commit, slipped dates, and convenient assumptions.</p>
           </article>
+          <article class="feature">
+            <span class="feature-symbol" aria-hidden="true">SDR</span>
+            <h3>Give SDR agents a queue</h3>
+            <p>Prioritize enrichment, separate sourced facts from guesses, and prepare outreach without sending it.</p>
+          </article>
+          <article class="feature feature-purple">
+            <span class="feature-symbol" aria-hidden="true">BOOT</span>
+            <h3>Bootstrap, then re-check</h3>
+            <p>Configure targets and defaults, audit readiness, and safely re-run onboarding whenever the pipeline changes.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="proof" aria-labelledby="proof-title">
+        <div class="proof-heading">
+          <p class="eyebrow">Evidence before intelligence</p>
+          <h2 id="proof-title">It doesn’t just give an answer.<br>It shows its work.</h2>
+        </div>
+        <div class="proof-list">
+          <div><span>91</span><p><strong>Explainable action score</strong>Why now, expected effort, and the underlying record.</p></div>
+          <div><span>1.8×</span><p><strong>Pipeline coverage</strong>Compared with the target and forecast period you configured.</p></div>
+          <div><span>!</span><p><strong>Critical finding</strong>Commit revenue with no credible next step is challenged, not celebrated.</p></div>
         </div>
       </section>
 
       <section class="cta" aria-labelledby="cta-title">
         <div>
-          <p class="eyebrow">Clone it. Change it. Ship it.</p>
-          <h2 id="cta-title">Give your agents<br>a pipeline.</h2>
+          <p class="eyebrow">Open source · local first · v0.3</p>
+          <h2 id="cta-title">Give your agents<br>revenue judgment.</h2>
         </div>
         <div class="cta-action">
           <div class="clone-command" aria-label="Git clone command">

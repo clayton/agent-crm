@@ -122,7 +122,14 @@ def list_projects(conn: sqlite3.Connection) -> list[dict]:
 
 COMPANY_FIELDS = {"name", "domain", "website", "linkedin_url", "industry", "employee_count", "annual_revenue", "location", "description"}
 CONTACT_FIELDS = {"company_id", "first_name", "last_name", "full_name", "email", "phone", "title", "department", "seniority", "linkedin_url", "location"}
-PROSPECT_FIELDS = {"contact_id", "company_id", "name", "source", "source_url", "owner", "fit_score", "priority", "pain_points", "needs", "budget", "authority", "timing", "qualification_notes", "do_not_contact", "lost_reason", "last_contacted_at", "next_contact_at", "stale_after"}
+PROSPECT_FIELDS = {
+    "contact_id", "company_id", "name", "source", "source_url", "owner",
+    "fit_score", "priority", "pain_points", "needs", "budget", "authority",
+    "timing", "qualification_notes", "do_not_contact", "lost_reason",
+    "last_contacted_at", "next_contact_at", "stale_after", "amount",
+    "currency", "expected_close_at", "forecast_category", "probability",
+    "probability_source", "next_step", "next_step_due_at", "qualified_at",
+}
 
 
 def _create_entity(conn: sqlite3.Connection, table: str, prefix: str, project: str, actor: str,
@@ -262,7 +269,10 @@ def create_prospect(conn: sqlite3.Connection, project: str, name: str, actor: st
 
 def get_prospect(conn: sqlite3.Connection, prospect_id: str) -> dict:
     row = conn.execute(
-        """SELECT p.*, s.key AS stage, s.name AS stage_name, c.full_name AS contact_name, co.name AS company_name
+        """SELECT p.*, s.key AS stage, s.name AS stage_name,
+                  c.full_name AS contact_name, c.email AS contact_email,
+                  c.phone AS contact_phone, c.title AS contact_title,
+                  co.name AS company_name, co.domain AS company_domain
            FROM prospects p JOIN pipeline_stages s ON s.id=p.stage_id
            LEFT JOIN contacts c ON c.id=p.contact_id LEFT JOIN companies co ON co.id=p.company_id
            WHERE p.id=?""", (prospect_id,)
@@ -320,6 +330,9 @@ def transition_prospect(conn: sqlite3.Connection, prospect_id: str, to_stage: st
         extra["do_not_contact"] = 1
     if to_stage in {"lost", "not_a_fit"} and reason:
         extra["lost_reason"] = reason
+    if to_stage == "won":
+        extra["forecast_category"] = "closed"
+        extra["probability"] = 100
     assignments = ["stage_id=?", "updated_at=?", "updated_by=?", "version=version+1"] + [f"{k}=?" for k in extra]
     params = [target["id"], timestamp, actor, *extra.values(), prospect_id]
     with transaction(conn):
@@ -339,8 +352,16 @@ def update_prospect(conn: sqlite3.Connection, prospect_id: str, actor: str,
     if expected_version is not None and current["version"] != expected_version:
         raise CRMError(f"Version conflict: expected {expected_version}, found {current['version']}")
     clean = {k + "_json" if k in {"tags", "custom"} else k: json.dumps(v) if k in {"tags", "custom"} else v for k, v in fields.items()}
+    close_date_changed = (
+        "expected_close_at" in fields
+        and current.get("expected_close_at")
+        and fields["expected_close_at"]
+        and fields["expected_close_at"] > current["expected_close_at"]
+    )
     clean.update(updated_at=now(), updated_by=actor)
     assignments = [f"{key}=?" for key in clean] + ["version=version+1"]
+    if close_date_changed:
+        assignments.append("close_date_changed_count=close_date_changed_count+1")
     with transaction(conn):
         conn.execute(f"UPDATE prospects SET {','.join(assignments)} WHERE id=?", (*clean.values(), prospect_id))
         activity(conn, current["project_id"], "prospect", prospect_id, "updated", actor, fields)
@@ -482,109 +503,108 @@ def inbox(conn: sqlite3.Connection, project: str | None = None, actor: str | Non
 
 
 def next_actions(conn: sqlite3.Connection, project: str, actor: str | None = None,
-                 limit: int = 5, stale_days: int = 30) -> dict:
-    """Return the highest-value concrete work items for a project."""
+                 limit: int = 5, stale_days: int = 30, mode: str = "balanced",
+                 time_budget: int | None = None) -> dict:
+    """Rank work across tasks and pipeline risks with inspectable reasons."""
+    if mode not in {"balanced", "close", "pipeline_build"}:
+        raise CRMError("Mode must be balanced, close, or pipeline_build.")
     project_row = resolve_project(conn, project)
     limit = min(max(limit, 3), 5)
     timestamp = now()
-    stale_cutoff = (datetime.now(UTC) - timedelta(days=stale_days)).isoformat(timespec="seconds")
-
-    task_sql = """SELECT t.*, p.name AS prospect_name, p.stage_id, s.key AS stage,
-                         c.name AS company_name
+    task_sql = """SELECT t.*, p.name AS prospect_name, p.amount, p.forecast_category,
+                         s.key AS stage, c.name AS company_name
                   FROM tasks t
                   LEFT JOIN prospects p ON p.id=t.prospect_id
                   LEFT JOIN pipeline_stages s ON s.id=p.stage_id
                   LEFT JOIN companies c ON c.id=COALESCE(t.company_id, p.company_id)
                   WHERE t.project_id=? AND t.status='open'"""
-    task_params: list[Any] = [project_row["id"]]
+    params: list[Any] = [project_row["id"]]
     if actor:
-        task_sql += " AND t.assigned_to=?"
-        task_params.append(actor)
-    tasks = [row_dict(row) or {} for row in conn.execute(task_sql, task_params)]
-
-    priority_rank = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
-
-    def task_rank(task: dict) -> tuple:
-        due_at = task.get("due_at")
-        overdue_rank = 0 if due_at and due_at < timestamp else 1
-        no_due_rank = 1 if due_at is None else 0
-        return (
-            overdue_rank,
-            priority_rank.get((task.get("priority") or "normal").lower(), 2),
-            no_due_rank,
-            due_at or "",
-            task["created_at"],
-        )
-
-    actions = []
-    for task in sorted(tasks, key=task_rank):
+        task_sql += " AND (t.assigned_to=? OR t.assigned_to IS NULL)"
+        params.append(actor)
+    candidates = []
+    priority_score = {"urgent": 35, "high": 25, "normal": 15, "low": 5}
+    for task_row in conn.execute(task_sql, params):
+        task = row_dict(task_row) or {}
+        score = priority_score.get(task.get("priority"), 15)
+        why = [f"{task.get('priority', 'normal')} priority task"]
         due_at = task.get("due_at")
         if due_at and due_at < timestamp:
-            reason = "overdue"
+            score += 70
+            why.append("overdue")
+        elif due_at and due_at[:10] <= timestamp[:10]:
+            score += 30
+            why.append("due today")
         elif due_at:
-            reason = "scheduled"
-        elif (task.get("priority") or "").lower() in {"urgent", "high"}:
-            reason = "high_priority"
-        else:
-            reason = "open_task"
-        actions.append({
-            "type": "task",
-            "id": task["id"],
-            "title": task["title"],
-            "reason": reason,
-            "priority": task["priority"],
-            "due_at": due_at,
-            "prospect_id": task.get("prospect_id"),
-            "prospect_name": task.get("prospect_name"),
-            "company_name": task.get("company_name"),
-            "stage": task.get("stage"),
+            score += 10
+            why.append("scheduled")
+        amount = task.get("amount") or 0
+        if amount:
+            score += min(int(amount / 5000), 20)
+            why.append(f"{amount:g} in pipeline")
+        if task.get("forecast_category") == "commit":
+            score += 20
+            why.append("commit opportunity")
+        if mode == "close" and task.get("stage") in {"replied", "meeting_booked"}:
+            score += 20
+        if mode == "pipeline_build" and task.get("stage") in {"identified", "researching", "ready_to_contact"}:
+            score += 20
+        candidates.append({
+            "type": "task", "id": task["id"], "title": task["title"],
+            "score": min(score, 100), "why_now": why, "reason": why[0],
+            "suggested_action": task["title"], "estimated_effort_minutes": 15,
+            "priority": task["priority"], "due_at": due_at,
+            "prospect_id": task.get("prospect_id"), "prospect_name": task.get("prospect_name"),
+            "company_name": task.get("company_name"), "stage": task.get("stage"), "amount": amount or None,
         })
 
-    if len(actions) < limit:
-        stale_sql = """SELECT p.id, p.name, p.priority, p.updated_at, p.next_contact_at,
-                              s.key AS stage, c.name AS company_name
-                       FROM prospects p
-                       JOIN pipeline_stages s ON s.id=p.stage_id
-                       LEFT JOIN companies c ON c.id=p.company_id
-                       WHERE p.project_id=? AND s.terminal=0
-                         AND (p.next_contact_at < ? OR p.updated_at < ?)
-                         AND NOT EXISTS (
-                           SELECT 1 FROM tasks t
-                           WHERE t.prospect_id=p.id AND t.status='open'
-                         )"""
-        stale_params: list[Any] = [project_row["id"], timestamp, stale_cutoff]
+    risks = pipeline_risks(conn, project, stale_days=stale_days)["risks"]
+    risk_score = {"critical": 90, "high": 75, "medium": 55, "low": 35}
+    for risk in risks:
         if actor:
-            stale_sql += " AND p.owner=?"
-            stale_params.append(actor)
-        stale_sql += """ ORDER BY
-                         CASE WHEN p.next_contact_at < ? THEN 0 ELSE 1 END,
-                         CASE p.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
-                              WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 2 END,
-                         COALESCE(p.next_contact_at, p.updated_at)"""
-        stale_params.append(timestamp)
-        for prospect in conn.execute(stale_sql, stale_params):
-            item = row_dict(prospect) or {}
-            follow_up_due = bool(item.get("next_contact_at") and item["next_contact_at"] < timestamp)
-            actions.append({
-                "type": "prospect_follow_up",
-                "id": item["id"],
-                "title": f"Follow up with {item['name']}",
-                "reason": "follow_up_due" if follow_up_due else "stale_prospect",
-                "priority": item["priority"],
-                "due_at": item.get("next_contact_at"),
-                "prospect_id": item["id"],
-                "prospect_name": item["name"],
-                "company_name": item.get("company_name"),
-                "stage": item["stage"],
-            })
-            if len(actions) >= limit:
-                break
+            owner = conn.execute("SELECT owner FROM prospects WHERE id=?", (risk["prospect_id"],)).fetchone()
+            if owner and owner["owner"] not in {None, actor}:
+                continue
+        score = risk_score[risk["severity"]]
+        if risk.get("amount"):
+            score += min(int(risk["amount"] / 10000), 10)
+        if mode == "close" and risk["stage"] in {"replied", "meeting_booked"}:
+            score += 10
+        if mode == "pipeline_build" and risk["kind"] in {"not_contactable", "missing_owner"}:
+            score += 10
+        candidates.append({
+            "type": "pipeline_risk", "id": f"{risk['kind']}:{risk['prospect_id']}",
+            "title": risk["recommended_action"], "score": min(score, 100),
+            "why_now": [risk["message"], f"{risk['severity']} pipeline risk"],
+            "reason": risk["kind"], "suggested_action": risk["recommended_action"],
+            "estimated_effort_minutes": 15, "priority": risk["severity"],
+            "due_at": None, "prospect_id": risk["prospect_id"],
+            "prospect_name": risk["prospect_name"], "company_name": None,
+            "stage": risk["stage"], "amount": risk.get("amount"),
+        })
 
+    candidates.sort(key=lambda item: (-item["score"], item["title"]))
+    selected, used_minutes, seen, seen_prospects = [], 0, set(), set()
+    for item in candidates:
+        key = (item["type"], item["id"])
+        if key in seen:
+            continue
+        if item.get("prospect_id") and item["prospect_id"] in seen_prospects:
+            continue
+        effort = item["estimated_effort_minutes"]
+        if time_budget is not None and selected and used_minutes + effort > time_budget:
+            continue
+        selected.append(item)
+        seen.add(key)
+        if item.get("prospect_id"):
+            seen_prospects.add(item["prospect_id"])
+        used_minutes += effort
+        if len(selected) >= limit:
+            break
     return {
         "project": {"id": project_row["id"], "slug": project_row["slug"], "name": project_row["name"]},
-        "generated_at": timestamp,
-        "actions": actions[:limit],
-        "count": min(len(actions), limit),
+        "generated_at": timestamp, "mode": mode, "time_budget_minutes": time_budget,
+        "estimated_total_minutes": used_minutes, "actions": selected, "count": len(selected),
     }
 
 
@@ -602,7 +622,9 @@ def pipeline(conn: sqlite3.Connection, project: str, include_terminal: bool = Fa
         stage = row_dict(stage_row) or {}
         prospects = [row_dict(row) for row in conn.execute(
             """SELECT p.id, p.name, p.owner, p.priority, p.fit_score, p.next_contact_at,
-                      p.last_contacted_at, p.updated_at, p.version,
+                      p.last_contacted_at, p.updated_at, p.version, p.amount,
+                      p.currency, p.expected_close_at, p.forecast_category,
+                      p.probability, p.next_step, p.next_step_due_at,
                       c.full_name AS contact_name, co.name AS company_name
                FROM prospects p
                LEFT JOIN contacts c ON c.id=p.contact_id
@@ -628,6 +650,469 @@ def pipeline(conn: sqlite3.Connection, project: str, include_terminal: bool = Fa
         "stages": stages,
         "total_prospects": total,
         "includes_terminal_stages": include_terminal,
+    }
+
+
+def _project_settings(project_row: dict) -> dict[str, Any]:
+    return dict(project_row.get("settings") or {})
+
+
+def _period_bounds(period: str | None) -> tuple[str, str, str]:
+    current = datetime.now(UTC)
+    if not period:
+        quarter = ((current.month - 1) // 3) + 1
+        period = f"{current.year}-Q{quarter}"
+    quarter_match = re.fullmatch(r"(\d{4})-Q([1-4])", period)
+    month_match = re.fullmatch(r"(\d{4})-(0[1-9]|1[0-2])", period)
+    if quarter_match:
+        year, quarter = int(quarter_match.group(1)), int(quarter_match.group(2))
+        start_month = (quarter - 1) * 3 + 1
+        start = datetime(year, start_month, 1, tzinfo=UTC)
+        end = datetime(year + (1 if start_month == 10 else 0), 1 if start_month == 10 else start_month + 3, 1, tzinfo=UTC)
+    elif month_match:
+        year, month = int(month_match.group(1)), int(month_match.group(2))
+        start = datetime(year, month, 1, tzinfo=UTC)
+        end = datetime(year + (1 if month == 12 else 0), 1 if month == 12 else month + 1, 1, tzinfo=UTC)
+    else:
+        raise CRMError("Period must be YYYY-Q1..Q4 or YYYY-MM.")
+    return period, start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds")
+
+
+def bootstrap(conn: sqlite3.Connection, project: str, actor: str,
+              target_amount: float | None = None, target_period: str | None = None,
+              currency: str | None = None, default_owner: str | None = None,
+              stale_days: int | None = None) -> dict:
+    """Safely configure and re-check a project's revenue operating defaults."""
+    actor = require_actor(actor)
+    project_row = resolve_project(conn, project)
+    settings = _project_settings(project_row)
+    supplied = {
+        "target_amount": target_amount,
+        "target_period": target_period,
+        "currency": currency,
+        "default_owner": default_owner,
+        "stale_days": stale_days,
+    }
+    changed = {key: value for key, value in supplied.items() if value is not None and settings.get(key) != value}
+    if target_period is not None:
+        _period_bounds(target_period)
+    if target_amount is not None and target_amount < 0:
+        raise CRMError("Target amount cannot be negative.")
+    if stale_days is not None and stale_days < 1:
+        raise CRMError("Stale days must be at least 1.")
+    if changed:
+        settings.update(changed)
+        timestamp = now()
+        with transaction(conn):
+            conn.execute(
+                "UPDATE projects SET settings_json=?, updated_at=?, updated_by=? WHERE id=?",
+                (json.dumps(settings, sort_keys=True), timestamp, actor, project_row["id"]),
+            )
+            activity(conn, project_row["id"], "project", project_row["id"], "bootstrapped", actor, changed)
+
+    counts = conn.execute(
+        """SELECT
+             COUNT(*) AS prospects,
+             COALESCE(SUM(CASE WHEN owner IS NULL OR owner='' THEN 1 ELSE 0 END), 0) AS missing_owner,
+             COALESCE(SUM(CASE WHEN contact_id IS NULL AND company_id IS NULL THEN 1 ELSE 0 END), 0) AS missing_relationship,
+             COALESCE(SUM(CASE WHEN qualified_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS opportunities,
+             COALESCE(SUM(CASE WHEN qualified_at IS NOT NULL AND
+                 (amount IS NULL OR expected_close_at IS NULL OR next_step IS NULL) THEN 1 ELSE 0 END), 0)
+                 AS incomplete_opportunities
+           FROM prospects WHERE project_id=?""",
+        (project_row["id"],),
+    ).fetchone()
+    values = row_dict(counts) or {}
+    checks = [
+        {"key": "currency", "complete": bool(settings.get("currency")), "message": "Set the default forecast currency."},
+        {"key": "target", "complete": settings.get("target_amount") is not None and bool(settings.get("target_period")),
+         "message": "Set a revenue target and target period."},
+        {"key": "owner", "complete": bool(settings.get("default_owner")) or values["missing_owner"] == 0,
+         "message": "Set a default owner or assign every active prospect."},
+        {"key": "pipeline", "complete": values["prospects"] > 0, "message": "Add the first prospect."},
+        {"key": "forecast_data", "complete": values["incomplete_opportunities"] == 0,
+         "message": "Complete amount, close date, and next step for qualified opportunities."},
+    ]
+    return {
+        "project": {"id": project_row["id"], "slug": project_row["slug"], "name": project_row["name"]},
+        "settings": settings,
+        "changed": changed,
+        "checks": checks,
+        "complete": all(item["complete"] for item in checks),
+        "counts": values,
+        "next_steps": [item["message"] for item in checks if not item["complete"]],
+    }
+
+
+def qualify_opportunity(conn: sqlite3.Connection, prospect_id: str, actor: str,
+                        amount: float, expected_close_at: str, next_step: str,
+                        currency: str | None = None, forecast_category: str = "pipeline",
+                        probability: int | None = None, next_step_due_at: str | None = None,
+                        expected_version: int | None = None) -> dict:
+    """Mark a prospect as forecastable while preserving its existing pipeline stage."""
+    current = get_prospect(conn, prospect_id)
+    settings = _project_settings(resolve_project(conn, current["project_id"]))
+    if amount < 0:
+        raise CRMError("Opportunity amount cannot be negative.")
+    if forecast_category not in {"pipeline", "best_case", "commit"}:
+        raise CRMError("Open opportunity forecast category must be pipeline, best_case, or commit.")
+    stage_probabilities = {
+        "identified": 5, "researching": 10, "qualified": 25,
+        "ready_to_contact": 30, "contacted": 40, "replied": 55,
+        "meeting_booked": 75,
+    }
+    source = "manual" if probability is not None else "stage_default"
+    probability = probability if probability is not None else stage_probabilities.get(current["stage"], 25)
+    fields = {
+        "amount": amount,
+        "currency": currency or settings.get("currency") or "USD",
+        "expected_close_at": expected_close_at,
+        "forecast_category": forecast_category,
+        "probability": probability,
+        "probability_source": source,
+        "next_step": next_step,
+        "next_step_due_at": next_step_due_at,
+        "qualified_at": current.get("qualified_at") or now(),
+    }
+    return update_prospect(conn, prospect_id, actor, fields, expected_version)
+
+
+def forecast(conn: sqlite3.Connection, project: str, period: str | None = None) -> dict:
+    project_row = resolve_project(conn, project)
+    settings = _project_settings(project_row)
+    period, start, end = _period_bounds(period or settings.get("target_period"))
+    all_rows = [row_dict(row) or {} for row in conn.execute(
+        """SELECT p.id, p.name, p.amount, p.currency, p.expected_close_at,
+                  p.forecast_category, p.probability, p.probability_source,
+                  p.next_step, p.next_step_due_at, p.close_date_changed_count,
+                  p.owner, p.qualified_at, p.last_contacted_at,
+                  s.key AS stage, s.terminal, s.outcome, c.name AS company_name
+           FROM prospects p JOIN pipeline_stages s ON s.id=p.stage_id
+           LEFT JOIN companies c ON c.id=p.company_id
+           WHERE p.project_id=? AND p.qualified_at IS NOT NULL""",
+        (project_row["id"],),
+    )]
+    rows = [
+        row for row in all_rows
+        if row.get("expected_close_at") and start <= row["expected_close_at"] < end
+    ]
+    forecast_currency = settings.get("currency") or (rows[0].get("currency") if rows else "USD")
+    currency_mismatches = [
+        {"id": row["id"], "name": row["name"], "currency": row.get("currency")}
+        for row in rows if row.get("currency") != forecast_currency
+    ]
+    comparable_rows = [row for row in rows if row.get("currency") == forecast_currency]
+    open_rows = [row for row in comparable_rows if not row["terminal"]]
+    won_rows = [row for row in comparable_rows if row["outcome"] == "won"]
+    open_pipeline = sum(row.get("amount") or 0 for row in open_rows)
+    weighted = sum((row.get("amount") or 0) * (row.get("probability") or 0) / 100 for row in open_rows)
+    commit = sum(row.get("amount") or 0 for row in open_rows if row.get("forecast_category") == "commit")
+    best_case = sum(row.get("amount") or 0 for row in open_rows if row.get("forecast_category") in {"commit", "best_case"})
+    closed_won = sum(row.get("amount") or 0 for row in won_rows)
+    target = settings.get("target_amount") if settings.get("target_period") == period else None
+    missing = [
+        {"id": row["id"], "name": row["name"],
+         "missing": [key for key in ("amount", "expected_close_at", "next_step", "probability") if row.get(key) is None]}
+        for row in all_rows
+        if any(row.get(key) is None for key in ("amount", "expected_close_at", "next_step", "probability"))
+    ]
+    return {
+        "project": {"id": project_row["id"], "slug": project_row["slug"], "name": project_row["name"]},
+        "period": period,
+        "currency": forecast_currency,
+        "target": target,
+        "closed_won": closed_won,
+        "open_pipeline": open_pipeline,
+        "weighted_forecast": round(weighted, 2),
+        "best_case": best_case,
+        "commit": commit,
+        "pipeline_coverage": round(open_pipeline / target, 2) if target else None,
+        "commit_attainment": round((closed_won + commit) / target, 2) if target else None,
+        "opportunities": rows,
+        "missing_data": missing,
+        "excluded_currency_mismatches": currency_mismatches,
+    }
+
+
+def conversion_report(conn: sqlite3.Connection, project: str) -> dict:
+    project_row = resolve_project(conn, project)
+    stages = [row_dict(row) or {} for row in conn.execute(
+        "SELECT * FROM pipeline_stages WHERE project_id=? ORDER BY position", (project_row["id"],)
+    )]
+    created = conn.execute(
+        "SELECT COUNT(*) FROM prospects WHERE project_id=?", (project_row["id"],)
+    ).fetchone()[0]
+    transitions = {
+        stage["key"]: conn.execute(
+            """SELECT COUNT(DISTINCT entity_id) FROM activities
+               WHERE project_id=? AND entity_type='prospect' AND action='stage_changed'
+                 AND json_extract(details_json, '$.to')=?""",
+            (project_row["id"], stage["key"]),
+        ).fetchone()[0]
+        for stage in stages
+    }
+    transitions["identified"] = max(transitions.get("identified", 0), created)
+    ordered = [stage for stage in stages if stage["key"] not in {"lost", "not_a_fit", "do_not_contact"}]
+    stage_metrics = []
+    previous = None
+    for stage in ordered:
+        reached = transitions.get(stage["key"], 0)
+        stage_metrics.append({
+            "stage": stage["key"],
+            "reached": reached,
+            "conversion_from_previous": round(reached / previous, 3) if previous else None,
+            "conversion_from_created": round(reached / created, 3) if created else None,
+        })
+        previous = reached
+    won = transitions.get("won", 0)
+    return {
+        "project": {"id": project_row["id"], "slug": project_row["slug"], "name": project_row["name"]},
+        "prospects_created": created,
+        "won": won,
+        "overall_win_rate": round(won / created, 3) if created else None,
+        "stages": stage_metrics,
+        "sample_warning": "Conversion rates are directional until enough historical stage transitions exist." if created < 30 else None,
+    }
+
+
+def pipeline_risks(conn: sqlite3.Connection, project: str, create_tasks: bool = False,
+                   actor: str | None = None, stale_days: int | None = None) -> dict:
+    project_row = resolve_project(conn, project)
+    settings = _project_settings(project_row)
+    stale_days = stale_days or settings.get("stale_days") or 30
+    timestamp = now()
+    stale_cutoff = (datetime.now(UTC) - timedelta(days=stale_days)).isoformat(timespec="seconds")
+    prospects = [row_dict(row) or {} for row in conn.execute(
+        """SELECT p.*, s.key AS stage, s.terminal, c.full_name AS contact_name,
+                  c.email, c.phone, co.name AS company_name
+           FROM prospects p JOIN pipeline_stages s ON s.id=p.stage_id
+           LEFT JOIN contacts c ON c.id=p.contact_id
+           LEFT JOIN companies co ON co.id=p.company_id
+           WHERE p.project_id=? AND s.terminal=0""",
+        (project_row["id"],),
+    )]
+    risks = []
+
+    def add(prospect: dict, kind: str, severity: str, message: str, action_text: str) -> None:
+        risks.append({
+            "kind": kind, "severity": severity, "prospect_id": prospect["id"],
+            "prospect_name": prospect["name"], "stage": prospect["stage"],
+            "amount": prospect.get("amount"), "message": message,
+            "recommended_action": action_text,
+        })
+
+    for item in prospects:
+        open_task = conn.execute(
+            "SELECT 1 FROM tasks WHERE prospect_id=? AND status='open' LIMIT 1", (item["id"],)
+        ).fetchone()
+        if not item.get("owner"):
+            add(item, "missing_owner", "high", "Active prospect has no owner.", "Assign an accountable owner.")
+        if not open_task and not item.get("next_contact_at") and not item.get("next_step_due_at"):
+            add(item, "no_next_action", "high", "No open task or scheduled next action.", "Schedule the next concrete step.")
+        if item.get("next_step_due_at") and item["next_step_due_at"] < timestamp:
+            add(item, "overdue_next_step", "critical", "The opportunity next step is overdue.", item.get("next_step") or "Review the opportunity.")
+        if item.get("expected_close_at") and item["expected_close_at"] < timestamp:
+            add(item, "expired_close_date", "critical", "Expected close date is in the past.", "Re-qualify or close the opportunity.")
+        if item["updated_at"] < stale_cutoff:
+            add(item, "stale", "medium", f"No CRM update in at least {stale_days} days.", "Review status and schedule a next step.")
+        if item["stage"] == "ready_to_contact" and not (item.get("email") or item.get("phone")):
+            add(item, "not_contactable", "high", "Ready-to-contact prospect has no email or phone.", "Enrich the contact record.")
+        if item.get("qualified_at") and any(item.get(key) is None for key in ("amount", "expected_close_at", "next_step")):
+            add(item, "incomplete_forecast", "high", "Qualified opportunity is missing forecast evidence.", "Add amount, close date, and next step.")
+    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    risks.sort(key=lambda item: (severity_order[item["severity"]], -(item.get("amount") or 0), item["prospect_name"]))
+    created_task_ids = []
+    if create_tasks:
+        actor = require_actor(actor)
+        for risk in risks:
+            title = f"CRM risk: {risk['recommended_action']}"
+            exists = conn.execute(
+                "SELECT id FROM tasks WHERE prospect_id=? AND status='open' AND title=?",
+                (risk["prospect_id"], title),
+            ).fetchone()
+            if not exists:
+                task = create_task(
+                    conn, project, actor, title, prospect_id=risk["prospect_id"],
+                    priority="urgent" if risk["severity"] == "critical" else "high",
+                )
+                created_task_ids.append(task["id"])
+    return {
+        "project": {"id": project_row["id"], "slug": project_row["slug"], "name": project_row["name"]},
+        "generated_at": timestamp,
+        "risks": risks,
+        "counts": {severity: sum(1 for item in risks if item["severity"] == severity)
+                   for severity in ("critical", "high", "medium", "low")},
+        "created_task_ids": created_task_ids,
+    }
+
+
+def cro_review(conn: sqlite3.Connection, project: str, period: str | None = None) -> dict:
+    forecast_data = forecast(conn, project, period)
+    risk_data = pipeline_risks(conn, project)
+    findings = []
+    for risk in risk_data["risks"]:
+        if risk["severity"] in {"critical", "high"}:
+            findings.append({
+                "severity": risk["severity"],
+                "finding": risk["message"],
+                "evidence": {"prospect_id": risk["prospect_id"], "prospect_name": risk["prospect_name"],
+                             "amount": risk.get("amount"), "stage": risk["stage"]},
+                "recommended_action": risk["recommended_action"],
+            })
+    target = forecast_data.get("target")
+    if target and forecast_data["pipeline_coverage"] < 3:
+        findings.append({
+            "severity": "critical" if forecast_data["pipeline_coverage"] < 1 else "high",
+            "finding": "Open pipeline coverage is below 3x target.",
+            "evidence": {"target": target, "open_pipeline": forecast_data["open_pipeline"],
+                         "coverage": forecast_data["pipeline_coverage"]},
+            "recommended_action": "Increase qualified pipeline or revise the forecast.",
+        })
+    if forecast_data["excluded_currency_mismatches"]:
+        findings.append({
+            "severity": "high",
+            "finding": "Some opportunities were excluded because their currency does not match the project forecast currency.",
+            "evidence": {"forecast_currency": forecast_data["currency"],
+                         "opportunities": forecast_data["excluded_currency_mismatches"]},
+            "recommended_action": "Normalize opportunity currency before relying on the aggregate forecast.",
+        })
+    commit_rows = [row for row in forecast_data["opportunities"] if row.get("forecast_category") == "commit" and not row["terminal"]]
+    engagement_cutoff = (datetime.now(UTC) - timedelta(days=14)).isoformat(timespec="seconds")
+    unsupported_commit = [
+        row for row in commit_rows
+        if not row.get("next_step")
+        or row.get("close_date_changed_count", 0) >= 2
+        or not row.get("last_contacted_at")
+        or row["last_contacted_at"] < engagement_cutoff
+    ]
+    if unsupported_commit:
+        findings.append({
+            "severity": "critical",
+            "finding": "Commit contains opportunities without credible supporting evidence.",
+            "evidence": {"opportunity_count": len(unsupported_commit),
+                         "amount": sum(row.get("amount") or 0 for row in unsupported_commit),
+                         "prospect_ids": [row["id"] for row in unsupported_commit]},
+            "recommended_action": "Re-qualify these opportunities or remove them from commit.",
+        })
+    slipped = [
+        row for row in forecast_data["opportunities"]
+        if not row["terminal"] and row.get("close_date_changed_count", 0) >= 2
+    ]
+    if slipped:
+        findings.append({
+            "severity": "high",
+            "finding": "Multiple opportunity close dates have been pushed at least twice.",
+            "evidence": {"opportunity_count": len(slipped),
+                         "amount": sum(row.get("amount") or 0 for row in slipped),
+                         "prospect_ids": [row["id"] for row in slipped]},
+            "recommended_action": "Re-confirm buying process and timing instead of rolling dates forward.",
+        })
+    open_rows = [row for row in forecast_data["opportunities"] if not row["terminal"]]
+    open_amount = sum(row.get("amount") or 0 for row in open_rows)
+    if open_amount:
+        largest = max(open_rows, key=lambda row: row.get("amount") or 0)
+        concentration = (largest.get("amount") or 0) / open_amount
+        if concentration >= 0.5:
+            findings.append({
+                "severity": "high",
+                "finding": "The forecast is highly concentrated in one opportunity.",
+                "evidence": {"prospect_id": largest["id"], "prospect_name": largest["name"],
+                             "amount": largest.get("amount"), "share_of_open_pipeline": round(concentration, 2)},
+                "recommended_action": "Build additional qualified coverage and scenario-plan without this deal.",
+            })
+    findings.sort(key=lambda item: {"critical": 0, "high": 1, "medium": 2, "low": 3}[item["severity"]])
+    return {
+        "project": forecast_data["project"],
+        "period": forecast_data["period"],
+        "headline": {
+            "target": target,
+            "closed_won": forecast_data["closed_won"],
+            "commit": forecast_data["commit"],
+            "weighted_forecast": forecast_data["weighted_forecast"],
+            "pipeline_coverage": forecast_data["pipeline_coverage"],
+        },
+        "findings": findings,
+        "finding_count": len(findings),
+        "verdict": "at_risk" if any(item["severity"] == "critical" for item in findings) else
+                   ("needs_attention" if findings else "healthy"),
+    }
+
+
+def sdr_queue(conn: sqlite3.Connection, project: str, limit: int = 25) -> dict:
+    project_row = resolve_project(conn, project)
+    rows = [row_dict(row) or {} for row in conn.execute(
+        """SELECT p.id, p.name, p.stage_id, p.fit_score, p.priority, p.source_url,
+                  p.pain_points, p.qualification_notes, p.last_contacted_at,
+                  s.key AS stage, c.full_name AS contact_name, c.email, c.phone,
+                  c.title, co.name AS company_name, co.domain, co.industry
+           FROM prospects p JOIN pipeline_stages s ON s.id=p.stage_id
+           LEFT JOIN contacts c ON c.id=p.contact_id
+           LEFT JOIN companies co ON co.id=p.company_id
+           WHERE p.project_id=? AND s.terminal=0
+             AND s.key IN ('identified','researching','qualified','ready_to_contact')""",
+        (project_row["id"],),
+    )]
+    queue = []
+    for item in rows:
+        completeness = sum(bool(item.get(key)) for key in
+                           ("company_name", "domain", "contact_name", "title", "email", "pain_points", "source_url"))
+        contactable = bool(item.get("email") or item.get("phone"))
+        score = (item.get("fit_score") or 0) + completeness * 5 + (15 if contactable else 0)
+        missing = [label for key, label in (
+            ("company_name", "company"), ("domain", "company domain"), ("contact_name", "contact"),
+            ("title", "contact title"), ("email", "email"), ("pain_points", "pain hypothesis"),
+            ("source_url", "source"),
+        ) if not item.get(key)]
+        queue.append({
+            **item, "score": min(score, 100), "research_completeness": round(completeness / 7, 2),
+            "contactable": contactable, "missing": missing,
+            "recommended_action": "prepare_outreach" if contactable and completeness >= 5 else "enrich",
+        })
+    queue.sort(key=lambda item: (-item["score"], item["name"]))
+    return {"project": {"id": project_row["id"], "slug": project_row["slug"], "name": project_row["name"]},
+            "queue": queue[:min(max(limit, 1), 100)], "count": min(len(queue), limit)}
+
+
+def research_brief(conn: sqlite3.Connection, prospect_id: str) -> dict:
+    prospect = get_prospect(conn, prospect_id)
+    sourced_notes = [note for note in prospect["notes"] if note.get("source_url")]
+    unsourced_notes = [note for note in prospect["notes"] if not note.get("source_url")]
+    missing = [label for key, label in (
+        ("company_name", "company"), ("contact_name", "contact"), ("source_url", "prospect source"),
+        ("pain_points", "pain hypothesis"), ("needs", "needs"), ("authority", "buying authority"),
+        ("timing", "timing"),
+    ) if not prospect.get(key)]
+    return {
+        "prospect": {key: prospect.get(key) for key in
+                     ("id", "name", "stage", "company_name", "contact_name", "fit_score", "source_url")},
+        "verified_facts": sourced_notes,
+        "unsourced_context": unsourced_notes,
+        "missing_information": missing,
+        "research_questions": [f"Find and verify: {item}." for item in missing],
+        "ready_for_outreach": not any(item in missing for item in ("company", "contact", "pain hypothesis")),
+    }
+
+
+def outreach_brief(conn: sqlite3.Connection, prospect_id: str) -> dict:
+    prospect = get_prospect(conn, prospect_id)
+    research = research_brief(conn, prospect_id)
+    prior = prospect["interactions"][:5]
+    missing = []
+    if not prospect.get("contact_name"):
+        missing.append("contact")
+    if not prospect.get("pain_points"):
+        missing.append("pain hypothesis")
+    return {
+        "prospect": research["prospect"],
+        "recommended_angle": prospect.get("pain_points") or prospect.get("needs"),
+        "qualification_context": prospect.get("qualification_notes"),
+        "suggested_channel": "email" if prospect.get("contact_email") else
+                             ("call" if prospect.get("contact_phone") else "research"),
+        "prior_interactions": prior,
+        "verified_facts": research["verified_facts"],
+        "missing_prerequisites": missing,
+        "ready": not missing and not prospect.get("do_not_contact"),
+        "safety_note": "This brief prepares outreach context; Agent CRM does not send messages.",
     }
 
 

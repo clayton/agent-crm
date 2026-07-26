@@ -109,8 +109,8 @@ class CRMTest(unittest.TestCase):
 
         self.assertEqual(result["count"], 3)
         self.assertEqual(result["actions"][0]["title"], "Overdue call")
-        self.assertEqual(result["actions"][0]["reason"], "overdue")
-        self.assertEqual(result["actions"][2]["reason"], "stale_prospect")
+        self.assertIn("overdue", result["actions"][0]["why_now"])
+        self.assertTrue(any(item["prospect_name"] == "Quiet account" for item in result["actions"]))
 
     def test_pipeline_groups_prospects_in_stage_order(self) -> None:
         service.create_prospect(self.conn, "imago", "First lead", "codex")
@@ -126,6 +126,104 @@ class CRMTest(unittest.TestCase):
         self.assertEqual(result["stages"][2]["prospects"][0]["name"], "Qualified lead")
         self.assertFalse(any(stage["terminal"] for stage in result["stages"]))
         self.assertEqual(service.pipeline(self.conn, "imago", True)["stages"][-1]["key"], "do_not_contact")
+
+    def test_bootstrap_is_rerunnable_and_reports_readiness(self) -> None:
+        first = service.bootstrap(
+            self.conn, "imago", "codex", target_amount=100_000,
+            target_period="2026-Q3", currency="USD", default_owner="codex",
+        )
+        second = service.bootstrap(
+            self.conn, "imago", "codex", target_amount=100_000,
+            target_period="2026-Q3", currency="USD", default_owner="codex",
+        )
+        self.assertEqual(first["changed"]["target_amount"], 100_000)
+        self.assertEqual(second["changed"], {})
+        self.assertEqual(second["settings"]["currency"], "USD")
+        self.assertIn("Add the first prospect.", second["next_steps"])
+
+    def test_forecast_and_close_date_push_tracking(self) -> None:
+        service.bootstrap(
+            self.conn, "imago", "codex", target_amount=100_000,
+            target_period="2026-Q3", currency="USD",
+        )
+        prospect = service.create_prospect(self.conn, "imago", "Forecastable", "codex")
+        qualified = service.qualify_opportunity(
+            self.conn, prospect["id"], "codex", 25_000,
+            "2026-08-15T00:00:00+00:00", "Schedule decision call",
+            forecast_category="commit", probability=80,
+        )
+        self.assertEqual(qualified["qualified_at"][:4], str(datetime.now(UTC).year))
+        service.update_prospect(
+            self.conn, prospect["id"], "codex",
+            {"expected_close_at": "2026-09-01T00:00:00+00:00"},
+            expected_version=qualified["version"],
+        )
+        result = service.forecast(self.conn, "imago", "2026-Q3")
+        self.assertEqual(result["open_pipeline"], 25_000)
+        self.assertEqual(result["weighted_forecast"], 20_000)
+        self.assertEqual(result["commit"], 25_000)
+        self.assertEqual(result["pipeline_coverage"], 0.25)
+        self.assertEqual(result["opportunities"][0]["close_date_changed_count"], 1)
+
+    def test_pipeline_risks_and_task_creation_are_idempotent(self) -> None:
+        prospect = service.create_prospect(self.conn, "imago", "Uncovered", "codex")
+        first = service.pipeline_risks(self.conn, "imago", create_tasks=True, actor="codex")
+        second = service.pipeline_risks(self.conn, "imago", create_tasks=True, actor="codex")
+        self.assertTrue(any(item["kind"] == "missing_owner" for item in first["risks"]))
+        self.assertTrue(any(item["kind"] == "no_next_action" for item in first["risks"]))
+        self.assertGreaterEqual(len(first["created_task_ids"]), 1)
+        self.assertEqual(second["created_task_ids"], [])
+        open_tasks = service.get_prospect(self.conn, prospect["id"])["open_tasks"]
+        self.assertEqual(len(open_tasks), len(first["created_task_ids"]))
+
+    def test_cro_review_challenges_low_coverage_and_unsupported_commit(self) -> None:
+        service.bootstrap(
+            self.conn, "imago", "codex", target_amount=100_000,
+            target_period="2026-Q3", currency="USD",
+        )
+        prospect = service.create_prospect(self.conn, "imago", "Optimistic", "codex", owner="codex")
+        service.qualify_opportunity(
+            self.conn, prospect["id"], "codex", 10_000,
+            "2026-08-15T00:00:00+00:00", "Initial next step",
+            forecast_category="commit",
+        )
+        service.update_prospect(self.conn, prospect["id"], "codex", {"next_step": None})
+        review = service.cro_review(self.conn, "imago", "2026-Q3")
+        self.assertEqual(review["verdict"], "at_risk")
+        self.assertTrue(any("coverage" in item["finding"] for item in review["findings"]))
+        self.assertTrue(any("Commit" in item["finding"] for item in review["findings"]))
+
+    def test_sdr_queue_and_briefs_separate_sourced_context(self) -> None:
+        company = service.create_company(self.conn, "imago", "Acme", "codex", domain="acme.example")
+        contact = service.create_contact(
+            self.conn, "imago", "Jane Buyer", "codex", company_id=company["id"],
+            email="jane@acme.example", title="VP Sales",
+        )
+        prospect = service.create_prospect(
+            self.conn, "imago", "Acme revenue team", "codex",
+            company_id=company["id"], contact_id=contact["id"], fit_score=90,
+            pain_points="Forecast calls are unreliable", source_url="https://acme.example",
+        )
+        service.add_note(
+            self.conn, "imago", "codex", "Hiring revenue operations staff.",
+            prospect_id=prospect["id"], kind="research", source_url="https://acme.example/jobs",
+        )
+        queue = service.sdr_queue(self.conn, "imago")
+        research = service.research_brief(self.conn, prospect["id"])
+        outreach = service.outreach_brief(self.conn, prospect["id"])
+        self.assertEqual(queue["queue"][0]["recommended_action"], "prepare_outreach")
+        self.assertEqual(len(research["verified_facts"]), 1)
+        self.assertTrue(outreach["ready"])
+        self.assertEqual(outreach["suggested_channel"], "email")
+
+    def test_conversion_report_uses_stage_history(self) -> None:
+        prospect = service.create_prospect(self.conn, "imago", "Converted", "codex")
+        service.transition_prospect(self.conn, prospect["id"], "researching", "codex")
+        result = service.conversion_report(self.conn, "imago")
+        researching = next(item for item in result["stages"] if item["stage"] == "researching")
+        self.assertEqual(result["prospects_created"], 1)
+        self.assertEqual(researching["reached"], 1)
+        self.assertEqual(researching["conversion_from_previous"], 1.0)
 
 
 if __name__ == "__main__":

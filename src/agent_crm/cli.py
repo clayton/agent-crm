@@ -117,6 +117,20 @@ def parser() -> argparse.ArgumentParser:
     pr_transition.add_argument("--expected-version", type=int)
     add_write(pr_transition)
 
+    opportunity = commands.add_parser("opportunity")
+    opportunity_commands = opportunity.add_subparsers(dest="action", required=True)
+    o_qualify = opportunity_commands.add_parser("qualify")
+    o_qualify.add_argument("prospect_id")
+    o_qualify.add_argument("--amount", type=float, required=True)
+    o_qualify.add_argument("--expected-close-at", required=True)
+    o_qualify.add_argument("--next-step", required=True)
+    o_qualify.add_argument("--currency")
+    o_qualify.add_argument("--forecast-category", choices=["pipeline", "best_case", "commit"], default="pipeline")
+    o_qualify.add_argument("--probability", type=int)
+    o_qualify.add_argument("--next-step-due-at")
+    o_qualify.add_argument("--expected-version", type=int)
+    add_write(o_qualify)
+
     note = commands.add_parser("note")
     note_commands = note.add_subparsers(dest="action", required=True)
     n_add = note_commands.add_parser("add")
@@ -169,10 +183,48 @@ def parser() -> argparse.ArgumentParser:
     next_actions.add_argument("--actor", help="Only include work assigned to this actor")
     next_actions.add_argument("--limit", type=int, choices=range(3, 6), default=5)
     next_actions.add_argument("--stale-days", type=int, default=30)
+    next_actions.add_argument("--mode", choices=["balanced", "close", "pipeline_build"], default="balanced")
+    next_actions.add_argument("--time-budget", type=int, help="Available minutes")
 
     pipeline = commands.add_parser("pipeline", help="Show prospects grouped by sales stage")
     pipeline.add_argument("project")
     pipeline.add_argument("--include-terminal", action="store_true")
+
+    bootstrap = commands.add_parser("bootstrap", help="Configure and re-check a CRM project")
+    bootstrap.add_argument("project")
+    bootstrap.add_argument("--target-amount", type=float)
+    bootstrap.add_argument("--target-period")
+    bootstrap.add_argument("--currency")
+    bootstrap.add_argument("--default-owner")
+    bootstrap.add_argument("--stale-days", type=int)
+    add_write(bootstrap)
+
+    forecast = commands.add_parser("forecast", help="Forecast revenue for a month or quarter")
+    forecast.add_argument("project")
+    forecast.add_argument("--period", help="YYYY-Q1..Q4 or YYYY-MM")
+
+    conversions = commands.add_parser("conversions", help="Show historical stage conversion rates")
+    conversions.add_argument("project")
+
+    review = commands.add_parser("review", help="Run the critical CRO review")
+    review.add_argument("project")
+    review.add_argument("--period")
+
+    risks = commands.add_parser("risks", help="Find pipeline work at risk of falling through the cracks")
+    risks.add_argument("project")
+    risks.add_argument("--stale-days", type=int)
+    risks.add_argument("--create-tasks", action="store_true")
+    add_write(risks)
+
+    sdr_queue = commands.add_parser("sdr-queue", help="Prioritize top-of-funnel research and outreach preparation")
+    sdr_queue.add_argument("project")
+    sdr_queue.add_argument("--limit", type=int, default=25)
+
+    research_brief = commands.add_parser("research-brief")
+    research_brief.add_argument("prospect_id")
+
+    outreach_brief = commands.add_parser("outreach-brief")
+    outreach_brief.add_argument("prospect_id")
 
     search = commands.add_parser("search")
     search.add_argument("project")
@@ -230,6 +282,12 @@ def run(args: argparse.Namespace) -> Any:
             if args.action == "update":
                 return service.update_prospect(conn, args.prospect_id, actor(args), args.fields, args.expected_version)
             return service.transition_prospect(conn, args.prospect_id, args.stage, actor(args), args.reason, args.expected_version)
+        if args.command == "opportunity":
+            return service.qualify_opportunity(
+                conn, args.prospect_id, actor(args), args.amount, args.expected_close_at,
+                args.next_step, args.currency, args.forecast_category, args.probability,
+                args.next_step_due_at, args.expected_version,
+            )
         if args.command == "note":
             values = compact_fields(args, {"db", "command", "action", "project", "actor", "body"})
             return service.add_note(conn, args.project, actor(args), args.body, **values)
@@ -246,9 +304,34 @@ def run(args: argparse.Namespace) -> Any:
         if args.command == "inbox":
             return service.inbox(conn, args.project, args.actor, args.due_within_days, args.stale_days)
         if args.command == "next-actions":
-            return service.next_actions(conn, args.project, args.actor, args.limit, args.stale_days)
+            return service.next_actions(
+                conn, args.project, args.actor, args.limit, args.stale_days,
+                args.mode, args.time_budget,
+            )
         if args.command == "pipeline":
             return service.pipeline(conn, args.project, args.include_terminal)
+        if args.command == "bootstrap":
+            return service.bootstrap(
+                conn, args.project, actor(args), args.target_amount, args.target_period,
+                args.currency, args.default_owner, args.stale_days,
+            )
+        if args.command == "forecast":
+            return service.forecast(conn, args.project, args.period)
+        if args.command == "conversions":
+            return service.conversion_report(conn, args.project)
+        if args.command == "review":
+            return service.cro_review(conn, args.project, args.period)
+        if args.command == "risks":
+            return service.pipeline_risks(
+                conn, args.project, args.create_tasks, actor(args) if args.create_tasks else None,
+                args.stale_days,
+            )
+        if args.command == "sdr-queue":
+            return service.sdr_queue(conn, args.project, args.limit)
+        if args.command == "research-brief":
+            return service.research_brief(conn, args.prospect_id)
+        if args.command == "outreach-brief":
+            return service.outreach_brief(conn, args.prospect_id)
         if args.command == "search":
             return service.search(conn, args.project, args.query, args.limit)
         if args.command == "timeline":

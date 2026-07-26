@@ -236,6 +236,29 @@ def migrate(conn: sqlite3.Connection) -> None:
         )
         conn.execute("PRAGMA user_version = 2")
         conn.commit()
+        version = 2
+    if version < 3:
+        conn.executescript(
+            """
+            ALTER TABLE prospects ADD COLUMN amount REAL;
+            ALTER TABLE prospects ADD COLUMN currency TEXT;
+            ALTER TABLE prospects ADD COLUMN expected_close_at TEXT;
+            ALTER TABLE prospects ADD COLUMN forecast_category TEXT
+                CHECK (forecast_category IN ('pipeline', 'best_case', 'commit', 'closed'));
+            ALTER TABLE prospects ADD COLUMN probability INTEGER
+                CHECK (probability BETWEEN 0 AND 100);
+            ALTER TABLE prospects ADD COLUMN probability_source TEXT
+                CHECK (probability_source IN ('manual', 'stage_default', 'historical'));
+            ALTER TABLE prospects ADD COLUMN next_step TEXT;
+            ALTER TABLE prospects ADD COLUMN next_step_due_at TEXT;
+            ALTER TABLE prospects ADD COLUMN qualified_at TEXT;
+            ALTER TABLE prospects ADD COLUMN close_date_changed_count INTEGER NOT NULL DEFAULT 0;
+            CREATE INDEX idx_prospects_close_date
+                ON prospects(project_id, expected_close_at);
+            """
+        )
+        conn.execute("PRAGMA user_version = 3")
+        conn.commit()
 
 
 def row_dict(row: sqlite3.Row | None) -> dict | None:

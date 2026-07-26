@@ -152,6 +152,22 @@ def crm_transition_prospect(prospect_id: str, to_stage: str, actor: str,
 
 
 @mcp.tool()
+def crm_qualify_opportunity(prospect_id: str, actor: str, amount: float,
+                            expected_close_at: str, next_step: str,
+                            currency: str | None = None,
+                            forecast_category: str = "pipeline",
+                            probability: int | None = None,
+                            next_step_due_at: str | None = None,
+                            expected_version: int | None = None) -> dict:
+    """Make a prospect forecastable with amount, close timing, probability, and a concrete next step."""
+    with db() as conn:
+        return service.qualify_opportunity(
+            conn, prospect_id, actor, amount, expected_close_at, next_step,
+            currency, forecast_category, probability, next_step_due_at, expected_version,
+        )
+
+
+@mcp.tool()
 def crm_add_note(project: str, body: str, actor: str, prospect_id: str | None = None,
                  contact_id: str | None = None, company_id: str | None = None,
                  kind: str = "general", source_url: str | None = None) -> dict:
@@ -206,10 +222,11 @@ def crm_inbox(project: str | None = None, actor: str | None = None,
 
 @mcp.tool()
 def crm_next_actions(project: str, actor: str | None = None, limit: int = 5,
-                     stale_days: int = 30) -> dict:
-    """Return 3-5 ranked next actions for today's most important CRM work."""
+                     stale_days: int = 30, mode: str = "balanced",
+                     time_budget: int | None = None) -> dict:
+    """Return 3-5 explainable, cross-category actions for today's most important CRM work."""
     with db() as conn:
-        return service.next_actions(conn, project, actor, limit, stale_days)
+        return service.next_actions(conn, project, actor, limit, stale_days, mode, time_budget)
 
 
 @mcp.tool()
@@ -217,6 +234,67 @@ def crm_pipeline(project: str, include_terminal: bool = False) -> dict:
     """Return a project's prospects grouped in sales-stage order."""
     with db() as conn:
         return service.pipeline(conn, project, include_terminal)
+
+
+@mcp.tool()
+def crm_bootstrap(project: str, actor: str, target_amount: float | None = None,
+                  target_period: str | None = None, currency: str | None = None,
+                  default_owner: str | None = None, stale_days: int | None = None) -> dict:
+    """Safely configure or re-check project readiness. Re-running is supported."""
+    with db() as conn:
+        return service.bootstrap(
+            conn, project, actor, target_amount, target_period, currency, default_owner, stale_days,
+        )
+
+
+@mcp.tool()
+def crm_forecast(project: str, period: str | None = None) -> dict:
+    """Forecast open, weighted, best-case, commit, and closed-won revenue."""
+    with db() as conn:
+        return service.forecast(conn, project, period)
+
+
+@mcp.tool()
+def crm_conversions(project: str) -> dict:
+    """Calculate directional historical conversion rates from the audit timeline."""
+    with db() as conn:
+        return service.conversion_report(conn, project)
+
+
+@mcp.tool()
+def crm_cro_review(project: str, period: str | None = None) -> dict:
+    """Run an adversarial revenue review that challenges unsupported forecast assumptions."""
+    with db() as conn:
+        return service.cro_review(conn, project, period)
+
+
+@mcp.tool()
+def crm_pipeline_risks(project: str, create_tasks: bool = False,
+                       actor: str | None = None, stale_days: int | None = None) -> dict:
+    """Find unowned, unscheduled, stale, overdue, uncontactable, and incomplete pipeline records."""
+    with db() as conn:
+        return service.pipeline_risks(conn, project, create_tasks, actor, stale_days)
+
+
+@mcp.tool()
+def crm_sdr_queue(project: str, limit: int = 25) -> dict:
+    """Prioritize top-of-funnel prospects for enrichment or outreach preparation."""
+    with db() as conn:
+        return service.sdr_queue(conn, project, limit)
+
+
+@mcp.tool()
+def crm_research_brief(prospect_id: str) -> dict:
+    """Separate sourced facts, unsourced context, and missing prospect research."""
+    with db() as conn:
+        return service.research_brief(conn, prospect_id)
+
+
+@mcp.tool()
+def crm_outreach_brief(prospect_id: str) -> dict:
+    """Prepare evidence-backed outreach context without sending a message."""
+    with db() as conn:
+        return service.outreach_brief(conn, prospect_id)
 
 
 @mcp.tool()
