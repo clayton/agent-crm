@@ -82,6 +82,51 @@ class CRMTest(unittest.TestCase):
         result = service.inbox(self.conn, "imago", "buzz:outreach", due_within_days=7, stale_days=30)
         self.assertEqual(result["counts"], {"overdue": 1, "due_soon": 1, "stale_prospects": 1})
 
+    def test_next_actions_ranks_tasks_and_fills_with_stale_prospects(self) -> None:
+        prospect = service.create_prospect(
+            self.conn, "imago", "Acme follow-up", "codex",
+            owner="buzz:outreach", priority="high",
+        )
+        past = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="seconds")
+        future = (datetime.now(UTC) + timedelta(days=2)).isoformat(timespec="seconds")
+        service.create_task(
+            self.conn, "imago", "codex", "Overdue call", due_at=past,
+            prospect_id=prospect["id"], assigned_to="buzz:outreach",
+        )
+        service.create_task(
+            self.conn, "imago", "codex", "Upcoming research", due_at=future,
+            assigned_to="buzz:outreach", priority="high",
+        )
+        stale = service.create_prospect(
+            self.conn, "imago", "Quiet account", "codex",
+            owner="buzz:outreach",
+        )
+        old = (datetime.now(UTC) - timedelta(days=45)).isoformat(timespec="seconds")
+        self.conn.execute("UPDATE prospects SET updated_at=? WHERE id=?", (old, stale["id"]))
+        self.conn.commit()
+
+        result = service.next_actions(self.conn, "imago", "buzz:outreach", limit=3)
+
+        self.assertEqual(result["count"], 3)
+        self.assertEqual(result["actions"][0]["title"], "Overdue call")
+        self.assertEqual(result["actions"][0]["reason"], "overdue")
+        self.assertEqual(result["actions"][2]["reason"], "stale_prospect")
+
+    def test_pipeline_groups_prospects_in_stage_order(self) -> None:
+        service.create_prospect(self.conn, "imago", "First lead", "codex")
+        qualified = service.create_prospect(self.conn, "imago", "Qualified lead", "codex")
+        service.transition_prospect(self.conn, qualified["id"], "researching", "codex")
+        service.transition_prospect(self.conn, qualified["id"], "qualified", "codex")
+
+        result = service.pipeline(self.conn, "imago")
+
+        self.assertEqual(result["stages"][0]["key"], "identified")
+        self.assertEqual(result["stages"][0]["count"], 1)
+        self.assertEqual(result["stages"][2]["key"], "qualified")
+        self.assertEqual(result["stages"][2]["prospects"][0]["name"], "Qualified lead")
+        self.assertFalse(any(stage["terminal"] for stage in result["stages"]))
+        self.assertEqual(service.pipeline(self.conn, "imago", True)["stages"][-1]["key"], "do_not_contact")
+
 
 if __name__ == "__main__":
     unittest.main()

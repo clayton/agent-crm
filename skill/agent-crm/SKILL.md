@@ -19,6 +19,9 @@ Use the MCP tools named `crm_*` when available. Otherwise call `crm`; it emits J
 - Do not send email, place calls, or contact anyone through this CRM. It is a system of record only.
 - Log completed outreach with `interaction log`; do not use a generic note as a substitute for an email, call, message, or meeting.
 - Do not run `inbox` automatically at session start. Run it only when explicitly requested or as part of a deliberately scheduled follow-up job.
+- When asked for today's priorities or the most important things to do, call `crm_next_actions` or `crm next-actions PROJECT`. Present the returned `actions` as a concise numbered list; preserve the reason, due date, prospect/company, and stage when useful.
+- When asked to show the pipeline, call `crm_pipeline` or `crm pipeline PROJECT`. Present stages in returned order with their prospect counts, and list the prospects within each stage. Include terminal stages only when the user asks for closed outcomes or pipeline history.
+- Read tools return structured data. Choose formatting that fits the conversation rather than reproducing raw JSON.
 
 ## CLI examples
 
@@ -51,6 +54,8 @@ Read and advance work:
 crm prospect get pro_ID
 crm prospect transition pro_ID researching --expected-version 1
 crm inbox --project imago --actor buzz:outreach
+crm next-actions imago
+crm pipeline imago
 ```
 
 Use `crm --help` and subcommand `--help` for the complete CLI contract.

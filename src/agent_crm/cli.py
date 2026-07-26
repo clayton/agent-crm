@@ -164,6 +164,16 @@ def parser() -> argparse.ArgumentParser:
     inbox.add_argument("--due-within-days", type=int, default=7)
     inbox.add_argument("--stale-days", type=int, default=30)
 
+    next_actions = commands.add_parser("next-actions", help="Return the 3-5 most important actions for a project")
+    next_actions.add_argument("project")
+    next_actions.add_argument("--actor", help="Only include work assigned to this actor")
+    next_actions.add_argument("--limit", type=int, choices=range(3, 6), default=5)
+    next_actions.add_argument("--stale-days", type=int, default=30)
+
+    pipeline = commands.add_parser("pipeline", help="Show prospects grouped by sales stage")
+    pipeline.add_argument("project")
+    pipeline.add_argument("--include-terminal", action="store_true")
+
     search = commands.add_parser("search")
     search.add_argument("project")
     search.add_argument("query")
@@ -235,6 +245,10 @@ def run(args: argparse.Namespace) -> Any:
             return service.list_interactions(conn, args.project, args.prospect_id, args.channel, args.limit)
         if args.command == "inbox":
             return service.inbox(conn, args.project, args.actor, args.due_within_days, args.stale_days)
+        if args.command == "next-actions":
+            return service.next_actions(conn, args.project, args.actor, args.limit, args.stale_days)
+        if args.command == "pipeline":
+            return service.pipeline(conn, args.project, args.include_terminal)
         if args.command == "search":
             return service.search(conn, args.project, args.query, args.limit)
         if args.command == "timeline":

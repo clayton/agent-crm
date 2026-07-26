@@ -79,6 +79,19 @@ Example MCP client configuration:
 
 The server exposes typed tools for projects, companies, contacts, prospects, pipeline transitions, notes, tasks, inbox queries, search, and timelines.
 
+Two agent-oriented read commands make common reviews direct:
+
+```bash
+# A ranked queue of 3-5 tasks and follow-ups
+./bin/crm next-actions pipeline
+
+# Prospects grouped in configured sales-stage order
+./bin/crm pipeline pipeline
+./bin/crm pipeline pipeline --include-terminal
+```
+
+The equivalent MCP tools are `crm_next_actions` and `crm_pipeline`. They return structured data so the calling agent can format it naturally for the conversation.
+
 ## Agent skill
 
 The reusable agent skill lives in [`skill/agent-crm`](skill/agent-crm). Symlink or copy that directory into your agent’s skills directory, then configure the skill to point to your checkout.

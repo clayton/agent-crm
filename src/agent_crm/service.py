@@ -481,6 +481,156 @@ def inbox(conn: sqlite3.Connection, project: str | None = None, actor: str | Non
             "counts": {"overdue": len(overdue), "due_soon": len(due_soon), "stale_prospects": len(stale)}}
 
 
+def next_actions(conn: sqlite3.Connection, project: str, actor: str | None = None,
+                 limit: int = 5, stale_days: int = 30) -> dict:
+    """Return the highest-value concrete work items for a project."""
+    project_row = resolve_project(conn, project)
+    limit = min(max(limit, 3), 5)
+    timestamp = now()
+    stale_cutoff = (datetime.now(UTC) - timedelta(days=stale_days)).isoformat(timespec="seconds")
+
+    task_sql = """SELECT t.*, p.name AS prospect_name, p.stage_id, s.key AS stage,
+                         c.name AS company_name
+                  FROM tasks t
+                  LEFT JOIN prospects p ON p.id=t.prospect_id
+                  LEFT JOIN pipeline_stages s ON s.id=p.stage_id
+                  LEFT JOIN companies c ON c.id=COALESCE(t.company_id, p.company_id)
+                  WHERE t.project_id=? AND t.status='open'"""
+    task_params: list[Any] = [project_row["id"]]
+    if actor:
+        task_sql += " AND t.assigned_to=?"
+        task_params.append(actor)
+    tasks = [row_dict(row) or {} for row in conn.execute(task_sql, task_params)]
+
+    priority_rank = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+
+    def task_rank(task: dict) -> tuple:
+        due_at = task.get("due_at")
+        overdue_rank = 0 if due_at and due_at < timestamp else 1
+        no_due_rank = 1 if due_at is None else 0
+        return (
+            overdue_rank,
+            priority_rank.get((task.get("priority") or "normal").lower(), 2),
+            no_due_rank,
+            due_at or "",
+            task["created_at"],
+        )
+
+    actions = []
+    for task in sorted(tasks, key=task_rank):
+        due_at = task.get("due_at")
+        if due_at and due_at < timestamp:
+            reason = "overdue"
+        elif due_at:
+            reason = "scheduled"
+        elif (task.get("priority") or "").lower() in {"urgent", "high"}:
+            reason = "high_priority"
+        else:
+            reason = "open_task"
+        actions.append({
+            "type": "task",
+            "id": task["id"],
+            "title": task["title"],
+            "reason": reason,
+            "priority": task["priority"],
+            "due_at": due_at,
+            "prospect_id": task.get("prospect_id"),
+            "prospect_name": task.get("prospect_name"),
+            "company_name": task.get("company_name"),
+            "stage": task.get("stage"),
+        })
+
+    if len(actions) < limit:
+        stale_sql = """SELECT p.id, p.name, p.priority, p.updated_at, p.next_contact_at,
+                              s.key AS stage, c.name AS company_name
+                       FROM prospects p
+                       JOIN pipeline_stages s ON s.id=p.stage_id
+                       LEFT JOIN companies c ON c.id=p.company_id
+                       WHERE p.project_id=? AND s.terminal=0
+                         AND (p.next_contact_at < ? OR p.updated_at < ?)
+                         AND NOT EXISTS (
+                           SELECT 1 FROM tasks t
+                           WHERE t.prospect_id=p.id AND t.status='open'
+                         )"""
+        stale_params: list[Any] = [project_row["id"], timestamp, stale_cutoff]
+        if actor:
+            stale_sql += " AND p.owner=?"
+            stale_params.append(actor)
+        stale_sql += """ ORDER BY
+                         CASE WHEN p.next_contact_at < ? THEN 0 ELSE 1 END,
+                         CASE p.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
+                              WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 2 END,
+                         COALESCE(p.next_contact_at, p.updated_at)"""
+        stale_params.append(timestamp)
+        for prospect in conn.execute(stale_sql, stale_params):
+            item = row_dict(prospect) or {}
+            follow_up_due = bool(item.get("next_contact_at") and item["next_contact_at"] < timestamp)
+            actions.append({
+                "type": "prospect_follow_up",
+                "id": item["id"],
+                "title": f"Follow up with {item['name']}",
+                "reason": "follow_up_due" if follow_up_due else "stale_prospect",
+                "priority": item["priority"],
+                "due_at": item.get("next_contact_at"),
+                "prospect_id": item["id"],
+                "prospect_name": item["name"],
+                "company_name": item.get("company_name"),
+                "stage": item["stage"],
+            })
+            if len(actions) >= limit:
+                break
+
+    return {
+        "project": {"id": project_row["id"], "slug": project_row["slug"], "name": project_row["name"]},
+        "generated_at": timestamp,
+        "actions": actions[:limit],
+        "count": min(len(actions), limit),
+    }
+
+
+def pipeline(conn: sqlite3.Connection, project: str, include_terminal: bool = False) -> dict:
+    """Return prospects grouped in configured pipeline-stage order."""
+    project_row = resolve_project(conn, project)
+    stage_sql = "SELECT * FROM pipeline_stages WHERE project_id=?"
+    stage_params: list[Any] = [project_row["id"]]
+    if not include_terminal:
+        stage_sql += " AND terminal=0"
+    stage_sql += " ORDER BY position"
+    stages = []
+    total = 0
+    for stage_row in conn.execute(stage_sql, stage_params):
+        stage = row_dict(stage_row) or {}
+        prospects = [row_dict(row) for row in conn.execute(
+            """SELECT p.id, p.name, p.owner, p.priority, p.fit_score, p.next_contact_at,
+                      p.last_contacted_at, p.updated_at, p.version,
+                      c.full_name AS contact_name, co.name AS company_name
+               FROM prospects p
+               LEFT JOIN contacts c ON c.id=p.contact_id
+               LEFT JOIN companies co ON co.id=p.company_id
+               WHERE p.stage_id=?
+               ORDER BY CASE p.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
+                        WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 2 END,
+                        p.updated_at DESC""",
+            (stage["id"],),
+        )]
+        stages.append({
+            "key": stage["key"],
+            "name": stage["name"],
+            "position": stage["position"],
+            "terminal": bool(stage["terminal"]),
+            "outcome": stage["outcome"],
+            "count": len(prospects),
+            "prospects": prospects,
+        })
+        total += len(prospects)
+    return {
+        "project": {"id": project_row["id"], "slug": project_row["slug"], "name": project_row["name"]},
+        "stages": stages,
+        "total_prospects": total,
+        "includes_terminal_stages": include_terminal,
+    }
+
+
 def search(conn: sqlite3.Connection, project: str, query: str, limit: int = 50) -> dict:
     project_id = resolve_project(conn, project)["id"]
     pattern = f"%{query}%"

@@ -205,6 +205,21 @@ def crm_inbox(project: str | None = None, actor: str | None = None,
 
 
 @mcp.tool()
+def crm_next_actions(project: str, actor: str | None = None, limit: int = 5,
+                     stale_days: int = 30) -> dict:
+    """Return 3-5 ranked next actions for today's most important CRM work."""
+    with db() as conn:
+        return service.next_actions(conn, project, actor, limit, stale_days)
+
+
+@mcp.tool()
+def crm_pipeline(project: str, include_terminal: bool = False) -> dict:
+    """Return a project's prospects grouped in sales-stage order."""
+    with db() as conn:
+        return service.pipeline(conn, project, include_terminal)
+
+
+@mcp.tool()
 def crm_search(project: str, query: str, limit: int = 50) -> dict:
     """Search companies, contacts, prospects, and notes within one project."""
     with db() as conn:
