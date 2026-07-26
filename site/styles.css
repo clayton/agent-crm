@@ -23,7 +23,7 @@
   --space-16: 4rem;
   --space-24: 6rem;
   --space-32: 8rem;
-  font-family: "Arial Narrow", "Aptos Narrow", Arial, sans-serif;
+  font-family: "Manrope", Arial, sans-serif;
   color: var(--ink);
   background: var(--paper);
   font-synthesis: none;
@@ -159,11 +159,10 @@ p {
 h1 {
   max-width: 750px;
   margin-bottom: var(--space-8);
-  font-size: clamp(4.5rem, 8.2vw, 7.5rem);
-  font-stretch: condensed;
-  font-weight: 900;
-  letter-spacing: -0.065em;
-  line-height: 0.83;
+  font-size: clamp(4.2rem, 7.5vw, 7rem);
+  font-weight: 800;
+  letter-spacing: -0.07em;
+  line-height: 0.88;
 }
 
 h1 span {
@@ -345,7 +344,7 @@ h1 span::after {
 .manifesto-copy {
   max-width: 930px;
   margin-bottom: 0;
-  font-size: clamp(1.7rem, 3.2vw, 3rem);
+  font-size: clamp(1.65rem, 3vw, 2.8rem);
   font-weight: 700;
   letter-spacing: -0.035em;
   line-height: 1.14;
@@ -369,7 +368,7 @@ h1 span::after {
 .section-heading h2 {
   max-width: 800px;
   margin: 0;
-  font-size: clamp(2.25rem, 4.5vw, 4rem);
+  font-size: clamp(2.2rem, 4.2vw, 3.8rem);
   letter-spacing: -0.045em;
   line-height: 1;
 }
@@ -454,7 +453,7 @@ h1 span::after {
 
 .cta h2 {
   margin-bottom: 0;
-  font-size: clamp(3rem, 6vw, 5.5rem);
+  font-size: clamp(2.8rem, 5.5vw, 5rem);
   letter-spacing: -0.055em;
   line-height: 0.9;
 }
