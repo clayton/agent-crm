@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-crm"
-version = "0.4.0"
+version = "0.4.1"
 description = "A local, agent-first CRM backed by SQLite"
 readme = "README.md"
 requires-python = ">=3.11"

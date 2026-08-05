@@ -69,6 +69,9 @@ class DashboardTest(unittest.TestCase):
         self.assertNotIn('href="/styles.css"', html)
         self.assertNotIn("Research </script>", html)
         self.assertIn("Research \\u003c/script>", html)
+        self.assertEqual(html.count("font-family:"), 1)
+        self.assertNotIn("Avenir", html)
+        self.assertNotIn("monospace", html)
 
         output = Path(self.tmp.name) / "snapshot.html"
         result = export_dashboard(self.db_path, output, "imago")
