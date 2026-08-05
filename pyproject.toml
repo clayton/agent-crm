@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-crm"
-version = "0.4.1"
+version = "0.4.2"
 description = "A local, agent-first CRM backed by SQLite"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,7 +17,7 @@ Repository = "https://github.com/clayton/agent-crm"
 Issues = "https://github.com/clayton/agent-crm/issues"
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.12,<2"]
+mcp = ["mcp>=1.12,<2", "cryptography>=50"]
 
 [project.scripts]
 crm = "agent_crm.cli:main"

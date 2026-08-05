@@ -104,7 +104,7 @@ def create_server(db: str | Path | None, host: str = "127.0.0.1", port: int = 87
     db_path = database_path(db).resolve()
 
     class DashboardHandler(BaseHTTPRequestHandler):
-        server_version = "AgentCRM/0.4.1"
+        server_version = "AgentCRM/0.4.2"
 
         def _send(self, body: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
             self.send_response(status)
