@@ -33,6 +33,19 @@ def connect(path: str | Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(path: str | Path | None = None) -> sqlite3.Connection:
+    """Open an existing CRM database without allowing writes or migrations."""
+    db_path = database_path(path).resolve()
+    if not db_path.is_file():
+        raise FileNotFoundError(f"CRM database not found: {db_path}")
+    conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA query_only = ON")
+    conn.execute("PRAGMA busy_timeout = 10000")
+    return conn
+
+
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     try:

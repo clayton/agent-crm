@@ -28,6 +28,7 @@ Use the MCP tools named `crm_*` when available. Otherwise call `crm`; it emits J
 - Use `crm_sdr_queue` to prioritize top-of-funnel work. Use `crm_research_brief` before enrichment or research and `crm_outreach_brief` before drafting outreach.
 - Research and outreach briefs do not authorize contacting anyone. Agent CRM remains a system of record and preparation tool.
 - Read tools return structured data. Choose formatting that fits the conversation rather than reproducing raw JSON.
+- When the user asks to see or review the CRM visually, use `crm dashboard serve`. For a portable point-in-time report, use `crm dashboard export --output PATH`. The dashboard is read-only; agents remain the only writers.
 
 ## CLI examples
 
@@ -62,6 +63,8 @@ crm prospect transition pro_ID researching --expected-version 1
 crm inbox --project imago --actor buzz:outreach
 crm next-actions imago
 crm pipeline imago
+crm dashboard serve imago
+crm dashboard export imago --output imago-pipeline.html
 crm bootstrap imago --target-amount 100000 --target-period 2026-Q3 --currency USD --actor codex
 crm opportunity qualify pro_ID --amount 25000 --expected-close-at 2026-09-15T00:00:00Z --next-step "Book decision call" --actor codex
 crm forecast imago --period 2026-Q3

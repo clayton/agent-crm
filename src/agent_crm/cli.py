@@ -7,6 +7,7 @@ import sqlite3
 import sys
 from typing import Any
 
+from . import dashboard as dashboard_ui
 from . import service
 from .db import connect, database_path
 
@@ -190,6 +191,18 @@ def parser() -> argparse.ArgumentParser:
     pipeline.add_argument("project")
     pipeline.add_argument("--include-terminal", action="store_true")
 
+    dashboard = commands.add_parser("dashboard", help="Open or export the read-only human dashboard")
+    dashboard_commands = dashboard.add_subparsers(dest="action", required=True)
+    dashboard_serve = dashboard_commands.add_parser("serve", help="Serve a live dashboard on localhost")
+    dashboard_serve.add_argument("project", nargs="?", help="Optionally limit the dashboard to one project")
+    dashboard_serve.add_argument("--host", default="127.0.0.1")
+    dashboard_serve.add_argument("--port", type=int, default=8765)
+    dashboard_serve.add_argument("--include-terminal", action="store_true")
+    dashboard_export = dashboard_commands.add_parser("export", help="Write a self-contained HTML snapshot")
+    dashboard_export.add_argument("project", nargs="?", help="Optionally limit the snapshot to one project")
+    dashboard_export.add_argument("--output", required=True)
+    dashboard_export.add_argument("--include-terminal", action="store_true")
+
     bootstrap = commands.add_parser("bootstrap", help="Configure and re-check a CRM project")
     bootstrap.add_argument("project")
     bootstrap.add_argument("--target-amount", type=float)
@@ -243,6 +256,15 @@ def compact_fields(args: argparse.Namespace, exclude: set[str]) -> dict:
 
 
 def run(args: argparse.Namespace) -> Any:
+    if args.command == "dashboard":
+        if args.action == "export":
+            return dashboard_ui.export_dashboard(
+                args.db, args.output, args.project, args.include_terminal,
+            )
+        dashboard_ui.serve_dashboard(
+            args.db, args.host, args.port, args.project, args.include_terminal,
+        )
+        return None
     conn = connect(args.db)
     try:
         if args.command == "init":
@@ -343,8 +365,10 @@ def run(args: argparse.Namespace) -> Any:
 
 def main() -> None:
     try:
-        print(json.dumps(run(parser().parse_args()), indent=2, sort_keys=True))
-    except (service.CRMError, sqlite3.IntegrityError) as exc:
+        result = run(parser().parse_args())
+        if result is not None:
+            print(json.dumps(result, indent=2, sort_keys=True))
+    except (service.CRMError, sqlite3.IntegrityError, FileNotFoundError, OSError) as exc:
         print(json.dumps({"error": str(exc), "type": exc.__class__.__name__}), file=sys.stderr)
         raise SystemExit(2) from exc
 

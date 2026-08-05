@@ -1,8 +1,8 @@
 # Agent CRM
 
-An open-source CRM built for agents, not dashboards.
+An open-source CRM built for agents, with a read-only dashboard for humans.
 
-Agent CRM keeps track of companies, contacts, prospects, opportunities, research, follow-ups, forecasts, and sales-pipeline state. It also points out unsupported forecasts and work that is falling through the cracks. The difference is intentional: there is no graphical interface. Agents work with it directly through a JSON CLI or typed MCP tools.
+Agent CRM keeps track of companies, contacts, prospects, opportunities, research, follow-ups, forecasts, and sales-pipeline state. It also points out unsupported forecasts and work that is falling through the cracks. Agents operate it directly through a JSON CLI or typed MCP tools. Humans can inspect the same data through an optional local dashboard that has no write controls or mutation endpoints.
 
 Data stays local in SQLite, and both interfaces use the same application service.
 
@@ -12,7 +12,8 @@ Learn more at [crmemento.com](https://crmemento.com).
 
 Most CRMs are designed around humans clicking through screens. Agent CRM is designed around agents reading structured context, taking explicit actions, and leaving an auditable trail.
 
-- **No interface:** Use the CLI or MCP tools.
+- **Agent-operated:** Use the CLI or MCP tools for every change.
+- **Human-visible:** Inspect pipeline health through a local, read-only dashboard.
 - **Local by default:** SQLite is the source of truth.
 - **Pipeline-aware:** Track prospects from identification through won, lost, or do-not-contact.
 - **Revenue-aware:** Forecast weighted, best-case, commit, and closed-won revenue.
@@ -58,6 +59,29 @@ identified → researching → qualified → ready_to_contact
 ```
 
 Every non-terminal stage can also exit to `lost`, `not_a_fit`, or `do_not_contact`.
+
+## Read-only human dashboard
+
+Run the live dashboard locally, then open the printed URL:
+
+```bash
+./bin/crm dashboard serve
+# http://127.0.0.1:8765
+
+# Limit the view to one project or include closed stages
+./bin/crm dashboard serve pipeline --include-terminal
+```
+
+The server binds to `127.0.0.1` by default, opens SQLite in read-only mode, and exposes only HTTP `GET` routes. It refreshes from the source database whenever dashboard data is requested. There are no forms, drag-and-drop mutations, or editing endpoints.
+
+For a portable point-in-time view, export a self-contained HTML file:
+
+```bash
+./bin/crm dashboard export --output crm-dashboard.html
+./bin/crm dashboard export pipeline --output pipeline.html
+```
+
+The live and exported modes share the same interface: an all-project overview, attention queue, risk summary, revenue metrics, Kanban pipeline, and read-only prospect details with tasks, notes, interactions, and activity.
 
 ## MCP server
 
