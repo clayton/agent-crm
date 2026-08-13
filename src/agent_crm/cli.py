@@ -277,8 +277,8 @@ def run(args: argparse.Namespace) -> Any:
             return service.get_project(conn, args.project)
         if args.command == "company":
             if args.action == "create":
-                values = compact_fields(args, {"db", "command", "action", "project", "actor"})
-                return service.create_company(conn, args.project, actor(args), **values)
+                values = compact_fields(args, {"db", "command", "action", "project", "actor", "name"})
+                return service.create_company(conn, args.project, args.name, actor(args), **values)
             if args.action == "get":
                 return service.get_company(conn, args.company_id)
             if args.action == "list":
