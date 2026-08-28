@@ -158,6 +158,25 @@ function parseJwt(token: string): { header: { kid?: string }; payload: Record<st
   return { header, payload, signed: `${parts[0]}.${parts[1]}`, signature };
 }
 
+export async function fetchJwks(jwksUrl: string): Promise<{ keys: (JsonWebKey & { kid?: string })[] }> {
+  const response = await fetch(jwksUrl);
+  if (!response.ok) {
+    throw new OAuthFlowError("JWKS fetch failed", response.status >= 500 ? 502 : 400);
+  }
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new OAuthFlowError("JWKS response not JSON", 502);
+  }
+  try {
+    const doc = (await response.json()) as { keys?: unknown };
+    if (!Array.isArray(doc.keys)) throw new OAuthFlowError("JWKS document missing keys", 502);
+    return doc as { keys: (JsonWebKey & { kid?: string })[] };
+  } catch (err) {
+    if (err instanceof OAuthFlowError) throw err;
+    throw new OAuthFlowError("JWKS response invalid JSON", 502);
+  }
+}
+
 export async function verifyIdToken(
   idToken: string,
   jwksUrl: string,
@@ -167,7 +186,7 @@ export async function verifyIdToken(
   const jwt = parseJwt(idToken);
   const kid = jwt.header.kid;
   if (!kid) throw new OAuthFlowError("id_token missing kid");
-  const keys = (await (await fetch(jwksUrl)).json()) as { keys: (JsonWebKey & { kid?: string })[] };
+  const keys = await fetchJwks(jwksUrl);
   const jwk = keys.keys.find((k) => k.kid === kid);
   if (!jwk) throw new OAuthFlowError("id_token signing key not found", 502);
   const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);

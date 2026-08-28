@@ -28,6 +28,19 @@ def cf_get(path: str) -> dict:
     return data["result"]
 
 
+def validate_jwks_url(url: str) -> None:
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"JWKS URL returned HTTP {resp.status}")
+        ct = resp.headers.get("Content-Type", "")
+        if "application/json" not in ct:
+            raise RuntimeError("JWKS URL content-type is not application/json")
+        doc = json.loads(resp.read())
+    if not isinstance(doc.get("keys"), list) or not doc["keys"]:
+        raise RuntimeError("JWKS response missing keys array")
+
+
 def wrangler_secret(name: str, value: str, env: str) -> None:
     proc = subprocess.run(
         ["npx", "wrangler", "secret", "put", name, "--env", env],
@@ -46,7 +59,8 @@ def main() -> None:
     client_secret = saas["client_secret"]
     auth_url = f"https://{TEAM}/cdn-cgi/access/sso/oidc/{client_id}/authorization"
     token_url = f"https://{TEAM}/cdn-cgi/access/sso/oidc/{client_id}/token"
-    jwks_url = f"https://{TEAM}/cdn-cgi/access/sso/oidc/{client_id}/certs"
+    jwks_url = f"https://{TEAM}/cdn-cgi/access/sso/oidc/{client_id}/jwks"
+    validate_jwks_url(jwks_url)
 
     cookie_key = subprocess.check_output(["openssl", "rand", "-hex", "32"]).decode().strip()
     secrets = {

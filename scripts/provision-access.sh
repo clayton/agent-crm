@@ -110,7 +110,30 @@ OAUTH_CLIENT_SECRET=$(echo "$SAAS_DETAIL" | python3 -c "import sys,json; print((
 
 AUTH_URL="https://${TEAM}/cdn-cgi/access/sso/oidc/${OAUTH_CLIENT_ID}/authorization"
 TOKEN_URL="https://${TEAM}/cdn-cgi/access/sso/oidc/${OAUTH_CLIENT_ID}/token"
-JWKS_URL="https://${TEAM}/cdn-cgi/access/sso/oidc/${OAUTH_CLIENT_ID}/certs"
+JWKS_URL="https://${TEAM}/cdn-cgi/access/sso/oidc/${OAUTH_CLIENT_ID}/jwks"
+
+validate_jwks_url() {
+  local url="$1"
+  local status ct body
+  status=$(curl -sS -o /dev/null -w "%{http_code}" "$url")
+  if [ "$status" != "200" ]; then
+    echo "JWKS URL returned HTTP ${status}" >&2
+    exit 1
+  fi
+  ct=$(curl -sS -D - -o /dev/null "$url" | awk -F': ' 'tolower($1)=="content-type"{print tolower($2)}' | tr -d '\r' | head -1)
+  if [[ "$ct" != *application/json* ]]; then
+    echo "JWKS URL content-type is not application/json" >&2
+    exit 1
+  fi
+  body=$(curl -sS "$url")
+  python3 -c "import json,sys; d=json.loads(sys.argv[1]); sys.exit(0 if isinstance(d.get('keys'), list) and d['keys'] else 1)" "$body" || {
+    echo "JWKS URL response missing keys array" >&2
+    exit 1
+  }
+}
+
+echo "Validating JWKS URL..."
+validate_jwks_url "$JWKS_URL"
 
 echo "Creating service token: agent-crm-pi..."
 ST_RESP=$(cf_api POST "/accounts/${ACCOUNT_ID}/access/service_tokens" --data '{"name":"agent-crm-pi"}')

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { accessOidcIssuer, decodeBase64Url, OAuthFlowError, verifyIdToken } from "../../worker/oauth-utils";
+import { accessOidcIssuer, decodeBase64Url, fetchJwks, OAuthFlowError, verifyIdToken } from "../../worker/oauth-utils";
 
 function b64url(data: string): string {
   return btoa(data).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
@@ -23,7 +23,7 @@ describe("accessOidcIssuer", () => {
       accessOidcIssuer({ ACCESS_TOKEN_URL: `https://${team}/cdn-cgi/access/sso/oidc/${clientId}/token` }),
     ).toBe(expected);
     expect(
-      accessOidcIssuer({ ACCESS_JWKS_URL: `https://${team}/cdn-cgi/access/sso/oidc/${clientId}/certs` }),
+      accessOidcIssuer({ ACCESS_JWKS_URL: `https://${team}/cdn-cgi/access/sso/oidc/${clientId}/jwks` }),
     ).toBe(expected);
   });
 
@@ -69,14 +69,51 @@ describe("verifyIdToken issuer", () => {
     const token = `${header}.${payload}.${b64url("sig")}`;
 
     vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "Content-Type": "application/json" }),
       json: async () => ({ keys: [{ kty: "RSA", kid: "kid-1", n: "x", e: "AQAB" }] }),
     } as Response);
     vi.spyOn(crypto.subtle, "importKey").mockResolvedValue({} as CryptoKey);
     vi.spyOn(crypto.subtle, "verify").mockResolvedValue(true);
 
-    await expect(verifyIdToken(token, "https://example/certs", clientId, expectedIss)).rejects.toThrow(
+    await expect(verifyIdToken(token, "https://example/jwks", clientId, expectedIss)).rejects.toThrow(
       "id_token issuer mismatch",
     );
+  });
+});
+
+describe("fetchJwks", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("throws OAuthFlowError on non-2xx", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: false, status: 404, headers: new Headers() } as Response);
+    await expect(fetchJwks("https://example/jwks")).rejects.toThrow(OAuthFlowError);
+    await expect(fetchJwks("https://example/jwks")).rejects.toThrow("JWKS fetch failed");
+  });
+
+  it("throws OAuthFlowError on non-JSON content-type", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "Content-Type": "text/html" }),
+      json: async () => ({}),
+    } as Response);
+    await expect(fetchJwks("https://example/jwks")).rejects.toThrow("JWKS response not JSON");
+  });
+
+  it("throws OAuthFlowError on invalid JSON body", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "Content-Type": "application/json" }),
+      json: async () => {
+        throw new SyntaxError("Unexpected end of JSON input");
+      },
+    } as Response);
+    await expect(fetchJwks("https://example/jwks")).rejects.toThrow("JWKS response invalid JSON");
   });
 });
 
