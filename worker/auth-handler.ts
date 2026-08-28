@@ -93,7 +93,12 @@ export const authHandler = {
         const clearCsrf = verifyCsrf(form, request);
         const encoded = form.get("state");
         if (typeof encoded !== "string") return new Response("Missing state", { status: 400 });
-        const parsed = JSON.parse(atob(encoded)) as { oauthReqInfo: Awaited<ReturnType<OAuthHelpers["parseAuthRequest"]>> };
+        let parsed: { oauthReqInfo: Awaited<ReturnType<OAuthHelpers["parseAuthRequest"]>> };
+        try {
+          parsed = JSON.parse(atob(encoded)) as { oauthReqInfo: Awaited<ReturnType<OAuthHelpers["parseAuthRequest"]>> };
+        } catch {
+          throw new OAuthFlowError("Invalid authorization state");
+        }
         const { stateToken, codeChallenge } = await createOAuthState(
           parsed.oauthReqInfo,
           env.OAUTH_KV,
@@ -105,11 +110,11 @@ export const authHandler = {
       }
 
       if (url.pathname === "/callback" && request.method === "GET") {
+        const code = url.searchParams.get("code");
+        if (!code) return new Response("Missing authorization code", { status: 400 });
         if (!env.COOKIE_ENCRYPTION_KEY) {
           return new Response("OAuth not configured", { status: 503 });
         }
-        const code = url.searchParams.get("code");
-        if (!code) return new Response("Missing authorization code", { status: 400 });
         const { oauthReqInfo, codeVerifier } = await validateOAuthState(request, env.OAUTH_KV, env.COOKIE_ENCRYPTION_KEY);
         if (!env.ACCESS_CLIENT_ID || !env.ACCESS_CLIENT_SECRET || !env.ACCESS_TOKEN_URL || !env.ACCESS_JWKS_URL) {
           return new Response("OAuth not configured", { status: 503 });
@@ -149,7 +154,10 @@ export const authHandler = {
       if (error instanceof OAuthFlowError) {
         return new Response(error.message, { status: error.status });
       }
-      if (error instanceof Error && /invalid|missing|not allowed|must be/i.test(error.message)) {
+      if (error instanceof SyntaxError) {
+        return new Response("Invalid authorization request", { status: 400 });
+      }
+      if (error instanceof Error && /invalid|missing|not allowed|must be|expired|mismatch/i.test(error.message)) {
         return new Response(error.message, { status: 400 });
       }
       return new Response("OAuth error", { status: 500 });

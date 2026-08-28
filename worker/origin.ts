@@ -1,21 +1,35 @@
 import type { Env } from "./index";
 
 const CORS_PREFIXES = ["/mcp", "/oauth", "/.well-known", "/authorize", "/callback"];
+const OAUTH_LOOPBACK_PREFIXES = ["/authorize", "/callback", "/oauth"];
 
-function trustedOrigins(env: Env): Set<string> {
-  const origins = new Set([
-    `https://${env.DASHBOARD_HOST}`,
-    `https://${env.AGENT_HOST}`,
-  ]);
-  if (env.DEV_SKIP_ACCESS === "true") {
-    origins.add("http://localhost:8787");
-    origins.add("http://127.0.0.1:8787");
+function trustedHttpsOrigins(env: Env): Set<string> {
+  return new Set([`https://${env.DASHBOARD_HOST}`, `https://${env.AGENT_HOST}`]);
+}
+
+function isOAuthPath(pathname: string): boolean {
+  return OAUTH_LOOPBACK_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
+/** RFC 8252 loopback redirect URIs use ephemeral ports on localhost/127.0.0.1. */
+export function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "http:") return false;
+    return url.hostname === "127.0.0.1" || url.hostname === "localhost";
+  } catch {
+    return false;
   }
-  return origins;
 }
 
 function needsOriginGate(pathname: string): boolean {
   return CORS_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
+function isOriginAllowed(origin: string, pathname: string, env: Env): boolean {
+  if (trustedHttpsOrigins(env).has(origin)) return true;
+  if (isOAuthPath(pathname) && isLoopbackOrigin(origin)) return true;
+  return false;
 }
 
 /** Block untrusted Origin on OAuth/MCP surfaces before OAuthProvider runs. */
@@ -26,7 +40,7 @@ export function enforceTrustedOrigin(request: Request, env: Env): Response | nul
   const { pathname } = new URL(request.url);
   if (!needsOriginGate(pathname)) return null;
 
-  if (!trustedOrigins(env).has(origin)) {
+  if (!isOriginAllowed(origin, pathname, env)) {
     return new Response("Forbidden", { status: 403 });
   }
 

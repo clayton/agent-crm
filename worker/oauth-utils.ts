@@ -117,7 +117,7 @@ export async function exchangeUpstreamCode(params: {
     body: body.toString(),
   });
   if (!response.ok) {
-    throw new OAuthFlowError(`Upstream token exchange failed: ${await response.text()}`, response.status);
+    throw new OAuthFlowError("Upstream token exchange failed", response.status >= 500 ? 502 : 400);
   }
   const json = (await response.json()) as { access_token?: string; id_token?: string };
   if (!json.access_token || !json.id_token) {
@@ -126,12 +126,18 @@ export async function exchangeUpstreamCode(params: {
   return { accessToken: json.access_token, idToken: json.id_token };
 }
 
+export function decodeBase64Url(segment: string): string {
+  const b64 = segment.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+  return atob(padded);
+}
+
 function parseJwt(token: string): { header: { kid?: string }; payload: Record<string, unknown>; signed: string; signature: Uint8Array } {
   const parts = token.split(".");
   if (parts.length !== 3) throw new OAuthFlowError("Invalid id_token format");
-  const header = JSON.parse(atob(parts[0].replace(/-/g, "+").replace(/_/g, "/"))) as { kid?: string };
-  const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))) as Record<string, unknown>;
-  const signature = Uint8Array.from(atob(parts[2].replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  const header = JSON.parse(decodeBase64Url(parts[0])) as { kid?: string };
+  const payload = JSON.parse(decodeBase64Url(parts[1])) as Record<string, unknown>;
+  const signature = Uint8Array.from(decodeBase64Url(parts[2]), (c) => c.charCodeAt(0));
   return { header, payload, signed: `${parts[0]}.${parts[1]}`, signature };
 }
 

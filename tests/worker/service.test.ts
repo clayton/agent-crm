@@ -7,9 +7,14 @@ import { scopesAllowTool } from "../../worker/scopes";
 
 const ctx = createExecutionContext();
 
-async function fetchWorker(path: string, hostname: string, init: RequestInit = {}): Promise<Response> {
+async function fetchWorker(
+  path: string,
+  hostname: string,
+  init: RequestInit = {},
+  extraEnv: Record<string, unknown> = {},
+): Promise<Response> {
   const request = new Request(`http://${hostname}${path}`, init);
-  const response = await worker.fetch(request, { ...env, DEV_SKIP_ACCESS: "true" }, ctx);
+  const response = await worker.fetch(request, { ...env, DEV_SKIP_ACCESS: "true", ...extraEnv }, ctx);
   await waitOnExecutionContext(ctx);
   return response;
 }
@@ -130,6 +135,75 @@ describe("agent-crm worker", () => {
     const res = await fetchWorker("/authorize", "crm-agent.services.c18h.net");
     expect(res.status).toBe(400);
     expect(await res.text()).toMatch(/client_id/i);
+  });
+
+  it("allows loopback Origin on OAuth authorize preflight", async () => {
+    const res = await fetchWorker("/authorize", "crm-agent.services.c18h.net", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "http://127.0.0.1:53682",
+        "Access-Control-Request-Method": "GET",
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://127.0.0.1:53682");
+  });
+
+  it("allows loopback Origin on OAuth token preflight", async () => {
+    const res = await fetchWorker("/oauth/token", "crm-agent.services.c18h.net", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "http://localhost:8765",
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:8765");
+  });
+
+  it("rejects non-loopback HTTP Origin on OAuth authorize", async () => {
+    const res = await fetchWorker("/authorize", "crm-agent.services.c18h.net", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "http://evil.example:8080",
+        "Access-Control-Request-Method": "GET",
+      },
+    });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+
+  it("rejects loopback Origin on MCP preflight", async () => {
+    const res = await fetchWorker("/mcp", "crm-agent.services.c18h.net", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "http://127.0.0.1:53682",
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+
+  it("returns 400 for callback without authorization code", async () => {
+    const res = await fetchWorker("/callback", "crm-agent.services.c18h.net");
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).toMatch(/authorization code/i);
+    expect(body).not.toMatch(/access_token|id_token|Bearer/i);
+  });
+
+  it("returns 400 for callback with invalid state", async () => {
+    const res = await fetchWorker(
+      "/callback?code=fake&state=bad",
+      "crm-agent.services.c18h.net",
+      {},
+      { COOKIE_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef" },
+    );
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body.length).toBeGreaterThan(0);
+    expect(body).not.toMatch(/access_token|id_token|Bearer/i);
   });
 });
 
