@@ -1,10 +1,49 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 import { createMcpHandler } from "agents/mcp/server";
+import { z } from "zod/v4";
 import { migrateLocal } from "../../worker/db";
 import { createMcpServer, MCP_TOOL_DEFS, buildMcpHandler } from "../../worker/mcp";
 
 type RegisteredTools = Record<string, { enabled?: boolean }>;
+
+const AGENT_HOST = "crm-agent.services.c18h.net";
+const DASHBOARD_HOST = "crm.services.c18h.net";
+
+function mcpHandler() {
+  return createMcpHandler(() => createMcpServer(env.DB), {
+    route: "/mcp",
+    allowedHostnames: [AGENT_HOST],
+    allowedOriginHostnames: [DASHBOARD_HOST],
+    responseMode: "json",
+    legacy: "stateless",
+    maxSubscriptions: 0,
+  });
+}
+
+async function readJsonRpc(res: Response): Promise<Record<string, unknown>> {
+  const ct = res.headers.get("content-type") ?? "";
+  if (ct.includes("application/json")) return (await res.json()) as Record<string, unknown>;
+  const text = await res.text();
+  const dataLine = text.split("\n").find((line) => line.startsWith("data: "));
+  if (!dataLine) throw new Error(`Unexpected MCP response: ${text.slice(0, 200)}`);
+  return JSON.parse(dataLine.slice(6)) as Record<string, unknown>;
+}
+
+async function postMcp(body: unknown): Promise<Response> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+    Host: AGENT_HOST,
+  };
+  return mcpHandler().fetch(
+    new Request(`http://${AGENT_HOST}/mcp`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    }),
+  );
+}
 
 describe("mcp tool registration", () => {
   beforeEach(async () => {
@@ -30,13 +69,65 @@ describe("mcp tool registration", () => {
     expect(() =>
       createMcpHandler(() => createMcpServer(env.DB), {
         route: "/mcp",
-        allowedHostnames: ["crm-agent.services.c18h.net"],
-        allowedOriginHostnames: ["crm.services.c18h.net"],
+        allowedHostnames: [AGENT_HOST],
+        allowedOriginHostnames: [DASHBOARD_HOST],
         responseMode: "auto",
         legacy: "stateless",
         maxSubscriptions: 0,
       }),
     ).not.toThrow();
-    expect(typeof buildMcpHandler("crm-agent.services.c18h.net", "crm.services.c18h.net")).toBe("function");
+    expect(typeof buildMcpHandler(AGENT_HOST, DASHBOARD_HOST)).toBe("function");
+  });
+
+  it("each tool raw shape converts to JSON Schema", () => {
+    for (const tool of MCP_TOOL_DEFS) {
+      expect(() => z.toJSONSchema(z.object(tool.schema)), tool.name).not.toThrow();
+    }
+  });
+
+  it("handler tools/list serializes schemas and returns exactly 35 tools", async () => {
+    const init = await postMcp({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "test", version: "1.0.0" },
+      },
+    });
+    expect(init.status).toBe(200);
+    const initBody = await readJsonRpc(init);
+    expect(initBody.error).toBeUndefined();
+
+    await postMcp({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+      params: {},
+    });
+
+    const list = await postMcp({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/list",
+      params: {},
+    });
+    expect(list.status).toBe(200);
+    const body = await readJsonRpc(list);
+    expect(body.error).toBeUndefined();
+    const tools = (body.result as { tools?: Array<{ name: string; inputSchema?: unknown }> })?.tools;
+    expect(tools?.length).toBe(35);
+    const names = tools!.map((t) => t.name).sort();
+    expect(names).toEqual([...MCP_TOOL_DEFS.map((t) => t.name)].sort());
+    for (const tool of tools!) {
+      expect(tool.inputSchema).toBeDefined();
+      expect(typeof tool.inputSchema).toBe("object");
+    }
+    const updateTools = tools!.filter((t) => t.name.startsWith("crm_update_"));
+    expect(updateTools.length).toBe(3);
+    for (const tool of updateTools) {
+      const schema = tool.inputSchema as { properties?: { fields?: { additionalProperties?: unknown } } };
+      expect(schema.properties?.fields?.additionalProperties).toBeDefined();
+    }
   });
 });
