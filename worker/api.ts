@@ -4,9 +4,8 @@ import * as service from "./service";
 import { CRMError } from "./service";
 import { reserveIdempotencyKey, completeIdempotency, releaseIdempotencyKey } from "./db";
 import { safeLog } from "./access";
-import { BodyTooLargeError, readBoundedBody } from "./body-limit";
+import { BodyTooLargeError, MAX_BODY_BYTES, readBoundedBody } from "./body-limit";
 
-const MAX_BODY = 256 * 1024;
 const MAX_IDEMPOTENCY_KEY = 128;
 
 export type ApiContext = {
@@ -348,7 +347,7 @@ export async function handleApiRequest(request: Request, ctx: ApiContext): Promi
   let body: Record<string, unknown> = { ...matched.params };
   if (request.method !== "GET") {
     try {
-      const raw = await readBoundedBody(request, MAX_BODY);
+      const raw = await readBoundedBody(request, MAX_BODY_BYTES);
       if (raw.byteLength) {
         body = { ...body, ...(JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>) };
       }
@@ -371,6 +370,7 @@ export async function handleApiRequest(request: Request, ctx: ApiContext): Promi
     return jsonResponse({ error: "Validation failed", details: parsed.error.flatten() }, 422);
   }
 
+  let reservedByThisRequest = false;
   try {
     if (op.write) {
       if (!ctx.idempotencyKey) {
@@ -383,6 +383,7 @@ export async function handleApiRequest(request: Request, ctx: ApiContext): Promi
       if (reserved !== "reserved") {
         return jsonResponse(JSON.parse(reserved.response_json));
       }
+      reservedByThisRequest = true;
     }
 
     const result = await op.handler(ctx, parsed.data as Record<string, unknown>);
@@ -391,7 +392,7 @@ export async function handleApiRequest(request: Request, ctx: ApiContext): Promi
     }
     return jsonResponse(result);
   } catch (error) {
-    if (op.write && ctx.idempotencyKey) {
+    if (reservedByThisRequest && ctx.idempotencyKey && error instanceof CRMError) {
       await releaseIdempotencyKey(ctx.db, ctx.idempotencyKey);
     }
     if (error instanceof Error && error.message.startsWith("Idempotency-Key")) {

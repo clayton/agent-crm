@@ -38,9 +38,5 @@ export async function readBoundedBody(request: Request, maxBytes = MAX_BODY_BYTE
 
 export async function requestWithBoundedBody(request: Request, maxBytes = MAX_BODY_BYTES): Promise<Request> {
   const body = await readBoundedBody(request, maxBytes);
-  return new Request(request.url, {
-    method: request.method,
-    headers: request.headers,
-    body: body.byteLength ? body : null,
-  });
+  return new Request(request, { body: body.byteLength ? body : undefined });
 }

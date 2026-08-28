@@ -90,16 +90,9 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
   }
   const prospectDetailMatch = url.pathname.match(/^\/api\/dashboard\/prospects\/([^/]+)$/);
   if (prospectDetailMatch) {
-    try {
-      const detail = await service.getProspect(env.DB, decodeURIComponent(prospectDetailMatch[1]));
-      detail.timeline = await service.timeline(env.DB, "prospect", String(detail.id), 50);
-      return json(detail);
-    } catch (error) {
-      if (error instanceof CRMError) {
-        return json({ error: error.message, type: "CRMError" }, 400);
-      }
-      throw error;
-    }
+    const detail = await service.getProspect(env.DB, decodeURIComponent(prospectDetailMatch[1]));
+    detail.timeline = await service.timeline(env.DB, "prospect", String(detail.id), 50);
+    return json(detail);
   }
   if (url.pathname === "/api/dashboard") {
     const project = url.searchParams.get("project");
@@ -209,6 +202,9 @@ export default {
       if (error instanceof AccessError) {
         safeLog("access_denied", { path: url.pathname });
         return json({ error: error.message }, 401);
+      }
+      if (error instanceof CRMError) {
+        return json({ error: error.message, type: "CRMError" }, 400);
       }
       throw error;
     }

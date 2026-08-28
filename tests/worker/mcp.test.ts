@@ -4,6 +4,7 @@ import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod/v4";
 import { migrateLocal } from "../../worker/db";
 import { createMcpServer, MCP_TOOL_DEFS, buildMcpHandler } from "../../worker/mcp";
+import * as service from "../../worker/service";
 
 type RegisteredTools = Record<string, { enabled?: boolean }>;
 
@@ -129,5 +130,39 @@ describe("mcp tool registration", () => {
       const schema = tool.inputSchema as { properties?: { fields?: { additionalProperties?: unknown } } };
       expect(schema.properties?.fields?.additionalProperties).toBeDefined();
     }
+  });
+
+  it("createCompany/createContact/createProspect strip route keys from service fields", async () => {
+    await service.createProject(env.DB, "MCP", "mcp:actor", "mcp-proj");
+    const actor = "mcp:mcp:actor";
+
+    const createCompany = MCP_TOOL_DEFS.find((t) => t.name === "crm_create_company")!;
+    const company = (await createCompany.handler(env.DB, actor, {
+      project: "mcp-proj",
+      name: "Acme MCP",
+      linkedin_url: "https://linkedin.com/company/acme",
+    })) as Record<string, unknown>;
+    expect(company.name).toBe("Acme MCP");
+    expect(company.linkedin_url).toBe("https://linkedin.com/company/acme");
+
+    const createContact = MCP_TOOL_DEFS.find((t) => t.name === "crm_create_contact")!;
+    const contact = (await createContact.handler(env.DB, actor, {
+      project: "mcp-proj",
+      full_name: "Jane Doe",
+      email: "jane@acme.test",
+    })) as Record<string, unknown>;
+    expect(contact.full_name).toBe("Jane Doe");
+    expect(contact.email).toBe("jane@acme.test");
+
+    const createProspect = MCP_TOOL_DEFS.find((t) => t.name === "crm_create_prospect")!;
+    const prospect = (await createProspect.handler(env.DB, actor, {
+      project: "mcp-proj",
+      name: "Lead MCP",
+      stage: "identified",
+      source_url: "https://example.com/lead",
+    })) as Record<string, unknown>;
+    expect(prospect.name).toBe("Lead MCP");
+    expect(prospect.source_url).toBe("https://example.com/lead");
+    expect(prospect.stage).toBe("identified");
   });
 });

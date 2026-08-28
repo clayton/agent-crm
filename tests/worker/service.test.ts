@@ -1,7 +1,7 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 import worker from "../../worker/index";
-import { migrateLocal } from "../../worker/db";
+import { migrateLocal, reserveIdempotencyKey } from "../../worker/db";
 import * as service from "../../worker/service";
 import { scopesAllowTool } from "../../worker/scopes";
 
@@ -420,6 +420,31 @@ describe("agent-crm worker", () => {
       headers,
     });
     expect(ok.status).toBe(200);
+  });
+
+  it("does not release in-progress idempotency row owned by another request", async () => {
+    await service.createProject(env.DB, "InProg", "inprog:actor", "inprog-proj");
+    await reserveIdempotencyKey(
+      env.DB,
+      "idem-in-progress-1",
+      "api:svc-a",
+      "POST /v1/projects/:project/companies",
+    );
+    const headers = {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "idem-in-progress-1",
+      "X-Dev-Service-Token": "svc-a",
+    };
+    const res = await fetchWorker("/v1/projects/inprog-proj/companies", "crm-agent.services.c18h.net", {
+      method: "POST",
+      body: JSON.stringify({ project: "inprog-proj", name: "Should Not Win" }),
+      headers,
+    });
+    expect(res.status).toBe(409);
+    const row = await env.DB.prepare(
+      "SELECT response_json FROM idempotency_keys WHERE key=?",
+    ).bind("idem-in-progress-1").first<{ response_json: string }>();
+    expect(row?.response_json).toBe("");
   });
 
   it("consent page escapes client name and id", async () => {
