@@ -205,6 +205,75 @@ describe("agent-crm worker", () => {
     expect(body.length).toBeGreaterThan(0);
     expect(body).not.toMatch(/access_token|id_token|Bearer/i);
   });
+
+  it("POST /authorize redirects to Access and clears CSRF cookie", async () => {
+    const oauthEnv = {
+      COOKIE_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef",
+      ACCESS_CLIENT_ID: "test-access-client",
+      ACCESS_AUTHORIZATION_URL:
+        "https://example.cloudflareaccess.com/cdn-cgi/access/sso/oidc/test-access-client/authorization",
+    };
+    const reg = await fetchWorker(
+      "/oauth/register",
+      "crm-agent.services.c18h.net",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_name: "test-mcp",
+          redirect_uris: ["http://127.0.0.1:8765/callback"],
+          token_endpoint_auth_method: "none",
+        }),
+      },
+      oauthEnv,
+    );
+    expect(reg.status).toBe(201);
+    const { client_id: clientId } = (await reg.json()) as { client_id: string };
+    const codeChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+    const redirectUri = "http://127.0.0.1:8765/callback";
+    const authorizeQuery = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
+      scope: "crm:read",
+    });
+    const consent = await fetchWorker(
+      `/authorize?${authorizeQuery}`,
+      "crm-agent.services.c18h.net",
+      {},
+      oauthEnv,
+    );
+    expect(consent.status).toBe(200);
+    const html = await consent.text();
+    const csrf = html.match(/name="csrf_token" value="([^"]+)"/)?.[1];
+    const state = html.match(/name="state" value="([^"]+)"/)?.[1];
+    expect(csrf).toBeTruthy();
+    expect(state).toBeTruthy();
+    const csrfCookie = consent.headers.get("Set-Cookie")?.match(/__Host-CSRF_TOKEN=([^;]+)/)?.[1];
+    expect(csrfCookie).toBe(csrf);
+
+    const post = await fetchWorker(
+      "/authorize",
+      "crm-agent.services.c18h.net",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Cookie: `__Host-CSRF_TOKEN=${csrfCookie}`,
+        },
+        body: new URLSearchParams({ csrf_token: csrf!, state: state! }).toString(),
+      },
+      oauthEnv,
+    );
+    expect(post.status).toBe(302);
+    expect(post.headers.get("Location")).toContain("example.cloudflareaccess.com");
+    const cleared = post.headers.get("Set-Cookie") ?? "";
+    expect(cleared).toMatch(/__Host-CSRF_TOKEN=/);
+    expect(cleared).toMatch(/Max-Age=0/);
+    expect(await post.text()).not.toMatch(/access_token|id_token|Bearer/i);
+  });
 });
 
 describe("scopes", () => {

@@ -52,7 +52,13 @@ function consentHtml(scopes: string[], csrf: string, oauthState: string): string
 </body></html>`;
 }
 
-function redirectToAccess(request: Request, env: AuthEnv, stateToken: string, codeChallenge: string): Response {
+function redirectToAccess(
+  request: Request,
+  env: AuthEnv,
+  stateToken: string,
+  codeChallenge: string,
+  clearCsrf?: string,
+): Response {
   if (!env.ACCESS_CLIENT_ID || !env.ACCESS_AUTHORIZATION_URL) {
     return new Response("OAuth not configured", { status: 503 });
   }
@@ -64,7 +70,9 @@ function redirectToAccess(request: Request, env: AuthEnv, stateToken: string, co
     state: stateToken,
     codeChallenge,
   });
-  return Response.redirect(location, 302);
+  const headers = new Headers({ Location: location });
+  if (clearCsrf) headers.append("Set-Cookie", clearCsrf);
+  return new Response(null, { status: 302, headers });
 }
 
 export const authHandler = {
@@ -106,9 +114,7 @@ export const authHandler = {
           env.OAUTH_KV,
           env.COOKIE_ENCRYPTION_KEY,
         );
-        const response = redirectToAccess(request, env, stateToken, codeChallenge);
-        response.headers.append("Set-Cookie", clearCsrf);
-        return response;
+        return redirectToAccess(request, env, stateToken, codeChallenge, clearCsrf);
       }
 
       if (url.pathname === "/callback" && request.method === "GET") {
