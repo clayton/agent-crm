@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""Fetch SaaS OAuth endpoints and set Worker secrets via wrangler + update 1Password."""
+"""Fetch SaaS OAuth endpoints and set Worker secrets via wrangler.
+
+Reuses COOKIE_ENCRYPTION_KEY from the environment by default. Pass
+--rotate-cookie-key only when you intend to invalidate existing OAuth sessions.
+Never commit or log secret values.
+"""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -52,7 +58,27 @@ def wrangler_secret(name: str, value: str, env: str) -> None:
         raise RuntimeError(proc.stderr.decode() or proc.stdout.decode())
 
 
+def resolve_cookie_key(args: argparse.Namespace) -> str:
+    if args.rotate_cookie_key:
+        return subprocess.check_output(["openssl", "rand", "-hex", "32"]).decode().strip()
+    existing = os.environ.get("COOKIE_ENCRYPTION_KEY", "").strip()
+    if existing:
+        return existing
+    raise RuntimeError(
+        "COOKIE_ENCRYPTION_KEY is not set. Export the existing key or pass --rotate-cookie-key "
+        "to generate a new one (this invalidates active OAuth sessions)."
+    )
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Provision Worker OAuth secrets.")
+    parser.add_argument(
+        "--rotate-cookie-key",
+        action="store_true",
+        help="Generate a new COOKIE_ENCRYPTION_KEY instead of reusing COOKIE_ENCRYPTION_KEY from the environment.",
+    )
+    args = parser.parse_args()
+
     app = cf_get(f"/accounts/{ACCOUNT}/access/apps/{SAAS_ID}")
     saas = app.get("saas_app") or {}
     client_id = saas["client_id"]
@@ -62,7 +88,7 @@ def main() -> None:
     jwks_url = f"https://{TEAM}/cdn-cgi/access/sso/oidc/{client_id}/jwks"
     validate_jwks_url(jwks_url)
 
-    cookie_key = subprocess.check_output(["openssl", "rand", "-hex", "32"]).decode().strip()
+    cookie_key = resolve_cookie_key(args)
     secrets = {
         "ACCESS_CLIENT_ID": client_id,
         "ACCESS_CLIENT_SECRET": client_secret,
@@ -82,6 +108,7 @@ def main() -> None:
         "access_aud_api": AUD_API,
         "oauth_client_id": client_id,
         "saas_app_id": SAAS_ID,
+        "cookie_key_rotated": args.rotate_cookie_key,
     }
     path = "/tmp/crm-access-provision.json"
     with open(path, "w", encoding="utf-8") as fh:

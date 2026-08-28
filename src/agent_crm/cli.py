@@ -327,6 +327,10 @@ def run(args: argparse.Namespace) -> Any:
         raise RuntimeError(
             "dashboard export is not available in remote mode; use https://crm.services.c18h.net"
         )
+    if remote_enabled() and args.command == "dashboard" and args.action == "serve":
+        raise RuntimeError(
+            "dashboard serve is not available in remote mode; use https://crm.services.c18h.net"
+        )
     if remote_enabled() and args.command not in {"dashboard", "contact"}:
         return run_remote(args)
     if args.command == "dashboard":

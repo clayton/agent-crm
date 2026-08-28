@@ -40,13 +40,26 @@ function requestedScopes(scope: string[]): string[] {
   return granted.length ? granted : [CRM_READ];
 }
 
-function consentHtml(scopes: string[], csrf: string, oauthState: string): string {
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function consentHtml(clientName: string, clientId: string, scopes: string[], csrf: string, oauthState: string): string {
+  const name = escapeHtml(clientName);
+  const id = escapeHtml(clientId);
+  const scopeList = scopes.map((s) => escapeHtml(s)).join(", ");
   return `<!DOCTYPE html><html><body>
 <h1>Agent CRM</h1>
-<p>Grant MCP access with scopes: ${scopes.join(", ")}</p>
+<p>Application: ${name} (${id})</p>
+<p>Grant MCP access with scopes: ${scopeList}</p>
 <form method="POST">
-<input type="hidden" name="csrf_token" value="${csrf}">
-<input type="hidden" name="state" value="${oauthState}">
+<input type="hidden" name="csrf_token" value="${escapeHtml(csrf)}">
+<input type="hidden" name="state" value="${escapeHtml(oauthState)}">
 <button type="submit">Allow</button>
 </form>
 </body></html>`;
@@ -89,8 +102,9 @@ export const authHandler = {
         const client = await env.OAUTH_PROVIDER.lookupClient(oauthReqInfo.clientId);
         if (!client) throw new OAuthFlowError("Invalid client_id");
         const { token, setCookie } = csrfToken();
-        const encoded = btoa(JSON.stringify({ oauthReqInfo, clientName: client.clientName ?? oauthReqInfo.clientId }));
-        return new Response(consentHtml(requestedScopes(oauthReqInfo.scope), token, encoded), {
+        const clientName = client.clientName ?? oauthReqInfo.clientId;
+        const encoded = btoa(JSON.stringify({ oauthReqInfo, clientName }));
+        return new Response(consentHtml(clientName, oauthReqInfo.clientId, requestedScopes(oauthReqInfo.scope), token, encoded), {
           headers: { "Content-Type": "text/html", "Cache-Control": "no-store", "Set-Cookie": setCookie },
         });
       }

@@ -9,13 +9,13 @@ import {
 } from "./access";
 import { handleApiRequest } from "./api";
 import { buildMcpHandler } from "./mcp";
-import { dashboardJson, dashboardProspectDetail } from "./dashboard";
+import { dashboardData } from "./dashboard";
+import * as service from "./service";
 import { authHandler } from "./auth-handler";
 import { enforceTrustedOrigin } from "./origin";
 import { CRMError } from "./service";
 
 export interface Env extends Cloudflare.Env {
-  ACCESS_TEAM_DOMAIN?: string;
   ACCESS_CLIENT_ID?: string;
   ACCESS_CLIENT_SECRET?: string;
   ACCESS_AUTHORIZATION_URL?: string;
@@ -23,10 +23,13 @@ export interface Env extends Cloudflare.Env {
   ACCESS_JWKS_URL?: string;
   ACCESS_ISSUER?: string;
   COOKIE_ENCRYPTION_KEY?: string;
-  DEV_SKIP_ACCESS?: string;
 }
 
 const TEAM_DOMAIN = "labountylabs.cloudflareaccess.com";
+
+function devSkipAccess(env: Env): boolean {
+  return String((env as { DEV_SKIP_ACCESS?: string }).DEV_SKIP_ACCESS ?? "") === "true";
+}
 
 function host(request: Request): string {
   const headerHost = request.headers.get("Host")?.split(":")[0];
@@ -52,7 +55,7 @@ function json(data: unknown, status = 200): Response {
 }
 
 async function verifyBrowserAccess(request: Request, env: Env) {
-  if (env.DEV_SKIP_ACCESS === "true") {
+  if (devSkipAccess(env)) {
     return { sub: "dev", email: "dev@local", type: "browser" as const };
   }
   const token = accessJwtFromRequest(request);
@@ -61,7 +64,7 @@ async function verifyBrowserAccess(request: Request, env: Env) {
 }
 
 async function verifyApiAccess(request: Request, env: Env) {
-  if (env.DEV_SKIP_ACCESS === "true") {
+  if (devSkipAccess(env)) {
     const svc = request.headers.get("X-Dev-Service-Token") ?? "dev-token";
     return { sub: "", commonName: svc, type: "service_token" as const };
   }
@@ -88,8 +91,9 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
   const prospectDetailMatch = url.pathname.match(/^\/api\/dashboard\/prospects\/([^/]+)$/);
   if (prospectDetailMatch) {
     try {
-      const data = await dashboardProspectDetail(env.DB, decodeURIComponent(prospectDetailMatch[1]));
-      return json(data);
+      const detail = await service.getProspect(env.DB, decodeURIComponent(prospectDetailMatch[1]));
+      detail.timeline = await service.timeline(env.DB, "prospect", String(detail.id), 50);
+      return json(detail);
     } catch (error) {
       if (error instanceof CRMError) {
         return json({ error: error.message, type: "CRMError" }, 400);
@@ -100,7 +104,7 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
   if (url.pathname === "/api/dashboard") {
     const project = url.searchParams.get("project");
     const includeTerminal = url.searchParams.get("include_terminal") === "true";
-    const data = await dashboardJson(env.DB, project, includeTerminal);
+    const data = await dashboardData(env.DB, project, includeTerminal);
     return json(data);
   }
   return new Response("Not found", { status: 404 });
@@ -127,7 +131,7 @@ const defaultHandler = {
   fetch: async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
     const url = new URL(request.url);
 
-    if (host(request).endsWith(".workers.dev") && env.DEV_SKIP_ACCESS !== "true") {
+    if (host(request).endsWith(".workers.dev") && !devSkipAccess(env)) {
       return new Response("Not found", { status: 404 });
     }
 
@@ -176,7 +180,7 @@ const AGENT_ONLY_PREFIXES = ["/mcp", "/oauth", "/.well-known", "/authorize", "/c
 
 function allowedHost(request: Request, env: Env): boolean {
   const h = host(request);
-  if (h.endsWith(".workers.dev")) return env.DEV_SKIP_ACCESS === "true";
+  if (h.endsWith(".workers.dev")) return devSkipAccess(env);
   return (
     h === env.DASHBOARD_HOST ||
     h === env.AGENT_HOST ||
@@ -199,6 +203,14 @@ export default {
     }
     const originBlock = enforceTrustedOrigin(request, env);
     if (originBlock) return originBlock;
-    return oauthWorker.fetch(request, env, ctx);
+    try {
+      return await oauthWorker.fetch(request, env, ctx);
+    } catch (error) {
+      if (error instanceof AccessError) {
+        safeLog("access_denied", { path: url.pathname });
+        return json({ error: error.message }, 401);
+      }
+      throw error;
+    }
   },
 };

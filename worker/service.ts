@@ -815,7 +815,9 @@ export async function inbox(
   actor?: string | null,
   dueWithinDays = 7,
   staleDays = 30,
+  limit = 100,
 ): Promise<Record<string, unknown>> {
+  const rowLimit = Math.min(Math.max(limit, 1), 500);
   const timestamp = now();
   const horizon = addDaysIso(dueWithinDays);
   const params: unknown[] = [];
@@ -836,13 +838,13 @@ export async function inbox(
                     WHERE t.status='open'`;
   const overdueRows = await all(
     db,
-    taskBase + " AND t.due_at IS NOT NULL AND t.due_at < ?" + projectClause + actorClause + " ORDER BY t.due_at",
-    timestamp, ...params,
+    taskBase + " AND t.due_at IS NOT NULL AND t.due_at < ?" + projectClause + actorClause + " ORDER BY t.due_at LIMIT ?",
+    timestamp, ...params, rowLimit,
   );
   const dueSoonRows = await all(
     db,
-    taskBase + " AND t.due_at >= ? AND t.due_at <= ?" + projectClause + actorClause + " ORDER BY t.due_at",
-    timestamp, horizon, ...params,
+    taskBase + " AND t.due_at >= ? AND t.due_at <= ?" + projectClause + actorClause + " ORDER BY t.due_at LIMIT ?",
+    timestamp, horizon, ...params, rowLimit,
   );
   const staleCutoff = subtractDaysIso(staleDays);
   let staleSql = `SELECT p.*, s.key AS stage, pr.slug AS project_slug FROM prospects p
@@ -857,7 +859,8 @@ export async function inbox(
     staleSql += " AND p.owner=?";
     staleParams.push(actor);
   }
-  staleSql += " ORDER BY p.updated_at";
+  staleSql += " ORDER BY p.updated_at LIMIT ?";
+  staleParams.push(rowLimit);
   const staleRows = await all(db, staleSql, ...staleParams);
   const overdue = overdueRows.map((r) => rowDict(r) ?? {});
   const dueSoon = dueSoonRows.map((r) => rowDict(r) ?? {});
@@ -1203,16 +1206,17 @@ export async function conversionReport(db: D1Database, project: string): Promise
     projectRow.id,
   );
   const created = Number(createdRow?.count ?? 0);
+  const transitionRows = await all<{ stage: string; count: number }>(
+    db,
+    `SELECT json_extract(details_json, '$.to') AS stage, COUNT(DISTINCT entity_id) AS count
+     FROM activities
+     WHERE project_id=? AND entity_type='prospect' AND action='stage_changed'
+     GROUP BY json_extract(details_json, '$.to')`,
+    projectRow.id,
+  );
   const transitions: Record<string, number> = {};
-  for (const stageItem of stages) {
-    const countRow = await first<{ count: number }>(
-      db,
-      `SELECT COUNT(DISTINCT entity_id) AS count FROM activities
-       WHERE project_id=? AND entity_type='prospect' AND action='stage_changed'
-         AND json_extract(details_json, '$.to')=?`,
-      projectRow.id, stageItem.key,
-    );
-    transitions[String(stageItem.key)] = Number(countRow?.count ?? 0);
+  for (const row of transitionRows) {
+    if (row.stage) transitions[String(row.stage)] = Number(row.count);
   }
   transitions.identified = Math.max(transitions.identified ?? 0, created);
   const ordered = stages.filter(
@@ -1257,8 +1261,9 @@ export async function pipelineRisks(
   const staleCutoff = subtractDaysIso(resolvedStaleDays);
   const prospectRows = await all(
     db,
-    `SELECT p.*, s.key AS stage, s.terminal, c.full_name AS contact_name,
-            c.email, c.phone, co.name AS company_name
+    `SELECT p.id, p.name, p.owner, p.amount, p.next_contact_at, p.next_step_due_at,
+            p.next_step, p.expected_close_at, p.updated_at, p.qualified_at,
+            s.key AS stage, c.email, c.phone, co.name AS company_name
      FROM prospects p JOIN pipeline_stages s ON s.id=p.stage_id
      LEFT JOIN contacts c ON c.id=p.contact_id
      LEFT JOIN companies co ON co.id=p.company_id
@@ -1653,6 +1658,8 @@ export async function sdrQueue(
   limit = 25,
 ): Promise<Record<string, unknown>> {
   const projectRow = await resolveProject(db, project);
+  const clampedLimit = Math.min(Math.max(limit, 1), 100);
+  const fetchLimit = Math.min(clampedLimit * 10, 500);
   const rows = (await all(
     db,
     `SELECT p.id, p.name, p.stage_id, p.fit_score, p.priority, p.source_url,
@@ -1663,8 +1670,10 @@ export async function sdrQueue(
      LEFT JOIN contacts c ON c.id=p.contact_id
      LEFT JOIN companies co ON co.id=p.company_id
      WHERE p.project_id=? AND s.terminal=0
-       AND s.key IN ('identified','researching','qualified','ready_to_contact')`,
-    projectRow.id,
+       AND s.key IN ('identified','researching','qualified','ready_to_contact')
+     ORDER BY p.fit_score DESC, p.updated_at DESC
+     LIMIT ?`,
+    projectRow.id, fetchLimit,
   )).map((row) => rowDict(row) ?? {});
 
   const queue: Record<string, unknown>[] = [];
@@ -1705,11 +1714,10 @@ export async function sdrQueue(
     if (scoreDiff !== 0) return scoreDiff;
     return String(a.name).localeCompare(String(b.name));
   });
-  const clampedLimit = Math.min(Math.max(limit, 1), 100);
   return {
     project: { id: projectRow.id, slug: projectRow.slug, name: projectRow.name },
     queue: queue.slice(0, clampedLimit),
-    count: Math.min(queue.length, limit),
+    count: Math.min(queue.length, clampedLimit),
   };
 }
 

@@ -1,11 +1,13 @@
-import { z } from "zod";
+import { z } from "zod/v4";
 import type { D1Database } from "@cloudflare/workers-types";
 import * as service from "./service";
 import { CRMError } from "./service";
-import { reserveIdempotencyKey, completeIdempotency } from "./db";
+import { reserveIdempotencyKey, completeIdempotency, releaseIdempotencyKey } from "./db";
 import { safeLog } from "./access";
+import { BodyTooLargeError, readBoundedBody } from "./body-limit";
 
 const MAX_BODY = 256 * 1024;
+const MAX_IDEMPOTENCY_KEY = 128;
 
 export type ApiContext = {
   db: D1Database;
@@ -56,16 +58,24 @@ const operations: Record<
       name: z.string().min(1),
       domain: z.string().optional(),
       website: z.string().optional(),
+      linkedin_url: z.string().optional(),
       industry: z.string().optional(),
+      employee_count: z.number().int().optional(),
+      annual_revenue: z.string().optional(),
+      location: z.string().optional(),
       description: z.string().optional(),
       tags: z.array(z.string()).optional(),
       custom: z.record(z.string(), z.unknown()).optional(),
-    }),
+    }).strict(),
     handler: async (ctx, body) =>
       service.createCompany(ctx.db, body.project as string, body.name as string, ctx.actor, {
         domain: body.domain,
         website: body.website,
+        linkedin_url: body.linkedin_url,
         industry: body.industry,
+        employee_count: body.employee_count,
+        annual_revenue: body.annual_revenue,
+        location: body.location,
         description: body.description,
         tags: body.tags,
         custom: body.custom,
@@ -100,20 +110,48 @@ const operations: Record<
       contact_id: z.string().optional(),
       company_id: z.string().optional(),
       source: z.string().optional(),
+      source_url: z.string().optional(),
       owner: z.string().optional(),
       fit_score: z.number().int().min(0).max(100).optional(),
       priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
+      pain_points: z.string().optional(),
+      needs: z.string().optional(),
+      budget: z.string().optional(),
+      authority: z.string().optional(),
+      timing: z.string().optional(),
+      qualification_notes: z.string().optional(),
+      amount: z.number().optional(),
+      currency: z.string().optional(),
+      expected_close_at: z.string().optional(),
+      forecast_category: z.enum(["pipeline", "best_case", "commit", "closed"]).optional(),
+      probability: z.number().int().min(0).max(100).optional(),
+      next_step: z.string().optional(),
+      next_step_due_at: z.string().optional(),
       tags: z.array(z.string()).optional(),
       custom: z.record(z.string(), z.unknown()).optional(),
-    }),
+    }).strict(),
     handler: async (ctx, body) =>
       service.createProspect(ctx.db, body.project as string, body.name as string, ctx.actor, (body.stage as string) ?? "identified", {
         contact_id: body.contact_id,
         company_id: body.company_id,
         source: body.source,
+        source_url: body.source_url,
         owner: body.owner,
         fit_score: body.fit_score,
         priority: body.priority,
+        pain_points: body.pain_points,
+        needs: body.needs,
+        budget: body.budget,
+        authority: body.authority,
+        timing: body.timing,
+        qualification_notes: body.qualification_notes,
+        amount: body.amount,
+        currency: body.currency,
+        expected_close_at: body.expected_close_at,
+        forecast_category: body.forecast_category,
+        probability: body.probability,
+        next_step: body.next_step,
+        next_step_due_at: body.next_step_due_at,
         tags: body.tags,
         custom: body.custom,
       }),
@@ -187,10 +225,12 @@ const operations: Record<
       title: z.string().min(1),
       due_at: z.string().optional(),
       prospect_id: z.string().optional(),
+      contact_id: z.string().optional(),
+      company_id: z.string().optional(),
       assigned_to: z.string().optional(),
       description: z.string().optional(),
       priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
-    }),
+    }).strict(),
     handler: async (ctx, body) =>
       service.createTask(
         ctx.db,
@@ -199,8 +239,8 @@ const operations: Record<
         body.title as string,
         body.due_at as string | undefined,
         body.prospect_id as string | undefined,
-        undefined,
-        undefined,
+        body.contact_id as string | undefined,
+        body.company_id as string | undefined,
         body.description as string | undefined,
         (body.priority as string) ?? "normal",
         body.assigned_to as string | undefined,
@@ -299,10 +339,6 @@ export async function handleApiRequest(request: Request, ctx: ApiContext): Promi
   if (!contentType.startsWith("application/json") && request.method !== "GET") {
     return jsonResponse({ error: "Content-Type must be application/json" }, 415);
   }
-  const contentLength = Number(request.headers.get("Content-Length") ?? "0");
-  if (contentLength > MAX_BODY) {
-    return jsonResponse({ error: "Request body too large" }, 413);
-  }
 
   const matched = matchRoute(url.pathname, request.method);
   if (!matched) return jsonResponse({ error: "Not found" }, 404);
@@ -312,8 +348,14 @@ export async function handleApiRequest(request: Request, ctx: ApiContext): Promi
   let body: Record<string, unknown> = { ...matched.params };
   if (request.method !== "GET") {
     try {
-      body = { ...body, ...(await request.json()) as Record<string, unknown> };
-    } catch {
+      const raw = await readBoundedBody(request, MAX_BODY);
+      if (raw.byteLength) {
+        body = { ...body, ...(JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>) };
+      }
+    } catch (error) {
+      if (error instanceof BodyTooLargeError) {
+        return jsonResponse({ error: "Request body too large" }, 413);
+      }
       return jsonResponse({ error: "Invalid JSON body" }, 400);
     }
   } else {
@@ -334,6 +376,9 @@ export async function handleApiRequest(request: Request, ctx: ApiContext): Promi
       if (!ctx.idempotencyKey) {
         return jsonResponse({ error: "Idempotency-Key header required" }, 400);
       }
+      if (ctx.idempotencyKey.length > MAX_IDEMPOTENCY_KEY) {
+        return jsonResponse({ error: "Idempotency-Key too long" }, 400);
+      }
       const reserved = await reserveIdempotencyKey(ctx.db, ctx.idempotencyKey, ctx.actor, matched.key);
       if (reserved !== "reserved") {
         return jsonResponse(JSON.parse(reserved.response_json));
@@ -346,6 +391,9 @@ export async function handleApiRequest(request: Request, ctx: ApiContext): Promi
     }
     return jsonResponse(result);
   } catch (error) {
+    if (op.write && ctx.idempotencyKey) {
+      await releaseIdempotencyKey(ctx.db, ctx.idempotencyKey);
+    }
     if (error instanceof Error && error.message.startsWith("Idempotency-Key")) {
       return jsonResponse({ error: error.message }, 409);
     }

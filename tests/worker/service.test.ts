@@ -333,7 +333,147 @@ describe("agent-crm worker", () => {
     expect(cleared).toMatch(/Max-Age=0/);
     expect(await post.text()).not.toMatch(/access_token|id_token|Bearer/i);
   });
+
+  it("dashboard returns 401 when Access is required", async () => {
+    const res = await fetchWorker("/api/dashboard", "crm.services.c18h.net", {}, { DEV_SKIP_ACCESS: "false" });
+    expect(res.status).toBe(401);
+  });
+
+  it("v1 returns 401 when Access is required", async () => {
+    const res = await fetchWorker("/v1/projects", "crm-agent.services.c18h.net", {}, { DEV_SKIP_ACCESS: "false" });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects measured body over 256 KiB even when Content-Length is small", async () => {
+    await service.createProject(env.DB, "Body", "body:actor", "body-proj");
+    const payload = JSON.stringify({ project: "body-proj", name: "Big Co", padding: "x".repeat(260 * 1024) });
+    const headers = {
+      "Content-Type": "application/json",
+      "Content-Length": "64",
+      "Idempotency-Key": "idem-body-1",
+      "X-Dev-Service-Token": "svc-a",
+    };
+    const res = await fetchWorker("/v1/projects/body-proj/companies", "crm-agent.services.c18h.net", {
+      method: "POST",
+      body: payload,
+      headers,
+    });
+    expect(res.status).toBe(413);
+  });
+
+  it("accepts small valid write body", async () => {
+    await service.createProject(env.DB, "Small", "small:actor", "small-proj");
+    const body = JSON.stringify({
+      project: "small-proj",
+      name: "Small Co",
+      linkedin_url: "https://linkedin.com/company/small",
+      employee_count: 12,
+    });
+    const headers = {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "idem-small-1",
+      "X-Dev-Service-Token": "svc-a",
+    };
+    const res = await fetchWorker("/v1/projects/small-proj/companies", "crm-agent.services.c18h.net", {
+      method: "POST",
+      body,
+      headers,
+    });
+    expect(res.status).toBe(200);
+    const company = await res.json();
+    expect(company.linkedin_url).toBe("https://linkedin.com/company/small");
+  });
+
+  it("rejects strict schema unknown fields on company create", async () => {
+    await service.createProject(env.DB, "Strict", "strict:actor", "strict-proj");
+    const body = JSON.stringify({ project: "strict-proj", name: "Co", unknown_field: true });
+    const headers = {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "idem-strict-1",
+      "X-Dev-Service-Token": "svc-a",
+    };
+    const res = await fetchWorker("/v1/projects/strict-proj/companies", "crm-agent.services.c18h.net", {
+      method: "POST",
+      body,
+      headers,
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it("releases idempotency key after failed write so retry succeeds", async () => {
+    await service.createProject(env.DB, "Idem", "idem:actor", "idem-proj");
+    const badBody = JSON.stringify({ project: "idem-proj", title: "Task", prospect_id: "missing-prospect" });
+    const headers = {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "idem-retry-1",
+      "X-Dev-Service-Token": "svc-a",
+    };
+    const fail = await fetchWorker("/v1/projects/idem-proj/tasks", "crm-agent.services.c18h.net", {
+      method: "POST",
+      body: badBody,
+      headers,
+    });
+    expect(fail.status).toBe(400);
+    const ok = await fetchWorker("/v1/projects/idem-proj/companies", "crm-agent.services.c18h.net", {
+      method: "POST",
+      body: JSON.stringify({ project: "idem-proj", name: "Retry Co" }),
+      headers,
+    });
+    expect(ok.status).toBe(200);
+  });
+
+  it("consent page escapes client name and id", async () => {
+    const oauthEnv = {
+      COOKIE_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef",
+      ACCESS_CLIENT_ID: "test-access-client",
+      ACCESS_AUTHORIZATION_URL:
+        "https://example.cloudflareaccess.com/cdn-cgi/access/sso/oidc/test-access-client/authorization",
+    };
+    const reg = await fetchWorker(
+      "/oauth/register",
+      "crm-agent.services.c18h.net",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_name: "Evil<script>alert(1)</script>",
+          redirect_uris: ["http://127.0.0.1:8765/callback"],
+          token_endpoint_auth_method: "none",
+        }),
+      },
+      oauthEnv,
+    );
+    expect(reg.status).toBe(201);
+    const { client_id: clientId } = (await reg.json()) as { client_id: string };
+    const authorizeQuery = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: "http://127.0.0.1:8765/callback",
+      response_type: "code",
+      code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+      code_challenge_method: "S256",
+      scope: "crm:read",
+    });
+    const consent = await fetchWorker(
+      `/authorize?${authorizeQuery}`,
+      "crm-agent.services.c18h.net",
+      {},
+      oauthEnv,
+    );
+    const html = await consent.text();
+    expect(html).toContain("Evil&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(html).toContain(escapeHtml(clientId));
+    expect(html).not.toContain("<script>alert(1)</script>");
+  });
 });
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
 
 describe("scopes", () => {
   it("read scope cannot imply write tools", async () => {

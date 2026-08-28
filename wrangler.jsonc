@@ -17,7 +17,7 @@
     "AGENT_HOST": "crm-agent.services.c18h.net",
     "ACCESS_AUD_DASHBOARD": "8d7deb0558a4d2fb5ac3b1bdff22141f315b4fb0125f19f8f1d2e8102844b191",
     "ACCESS_AUD_API": "fc21e9ffc40360ebe9bb6561c20a30510b23b382a4662438fdf9c00470c30ddd",
-    "DEV_SKIP_ACCESS": "true"
+    "DEV_SKIP_ACCESS": "false"
   },
   "d1_databases": [
     {
@@ -66,7 +66,8 @@
         "AGENT_HOST": "crm-agent.services.c18h.net",
         "ACCESS_AUD_DASHBOARD": "8d7deb0558a4d2fb5ac3b1bdff22141f315b4fb0125f19f8f1d2e8102844b191",
         "ACCESS_AUD_API": "fc21e9ffc40360ebe9bb6561c20a30510b23b382a4662438fdf9c00470c30ddd",
-        "ACCESS_TEAM_DOMAIN": "labountylabs.cloudflareaccess.com"
+        "ACCESS_TEAM_DOMAIN": "labountylabs.cloudflareaccess.com",
+        "DEV_SKIP_ACCESS": "false"
       },
       "d1_databases": [
         {

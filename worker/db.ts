@@ -99,6 +99,14 @@ export async function reserveIdempotencyKey(
   return "reserved";
 }
 
+export async function releaseIdempotencyKey(db: D1Database, key: string): Promise<void> {
+  await run(
+    db,
+    "DELETE FROM idempotency_keys WHERE key=? AND response_json=''",
+    key,
+  );
+}
+
 export async function completeIdempotency(
   db: D1Database,
   key: string,

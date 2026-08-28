@@ -224,12 +224,14 @@ The core test suite has no third-party dependencies:
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-## Cloud service (staging)
+## Cloud service (production)
 
-Agent CRM can run on Cloudflare Workers with D1, split across two hostnames:
+Agent CRM runs on Cloudflare Workers with D1. Production traffic uses custom domains on the `agent-crm` worker (`npm run deploy:production`):
 
 - `crm.services.c18h.net` — human dashboard (Cloudflare Access browser identity)
 - `crm-agent.services.c18h.net` — MCP OAuth (`/mcp`) and service-token API (`/v1/*`)
+
+The default `npm run deploy` target is the staging worker (`agent-crm-staging`) and does not serve those production hosts.
 
 Local development:
 

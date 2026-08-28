@@ -44,13 +44,3 @@ export async function dashboardData(
     projects: results,
   };
 }
-
-export async function dashboardJson(db: D1Database, project?: string | null, includeTerminal = false) {
-  return dashboardData(db, project, includeTerminal);
-}
-
-export async function dashboardProspectDetail(db: D1Database, prospectId: string): Promise<Record<string, unknown>> {
-  const detail = await service.getProspect(db, prospectId);
-  detail.timeline = await service.timeline(db, "prospect", prospectId, 50);
-  return detail;
-}
