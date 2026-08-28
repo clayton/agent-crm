@@ -427,7 +427,7 @@ describe("agent-crm worker", () => {
     await reserveIdempotencyKey(
       env.DB,
       "idem-in-progress-1",
-      "api:svc-a",
+      "api:svc:svc-a",
       "POST /v1/projects/:project/companies",
     );
     const headers = {
