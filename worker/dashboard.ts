@@ -1,4 +1,3 @@
-import type { D1Database } from "@cloudflare/workers-types";
 import * as service from "./service";
 
 export async function dashboardData(

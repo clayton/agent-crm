@@ -1,5 +1,4 @@
 import { z } from "zod/v4";
-import type { D1Database } from "@cloudflare/workers-types";
 import * as service from "./service";
 import { CRMError } from "./service";
 import { reserveIdempotencyKey, completeIdempotency, releaseIdempotencyKey } from "./db";

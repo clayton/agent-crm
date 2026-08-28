@@ -1,4 +1,3 @@
-import type { D1Database } from "@cloudflare/workers-types";
 import { rowDict, all, first, batch, type JsonValue } from "./db";
 
 export class CRMError extends Error {

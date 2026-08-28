@@ -1,4 +1,3 @@
-import type { ExecutionContext } from "@cloudflare/workers-types";
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import {
   accessJwtFromRequest,
@@ -16,6 +15,7 @@ import { enforceTrustedOrigin } from "./origin";
 import { CRMError } from "./service";
 
 export interface Env extends Cloudflare.Env {
+  ASSETS: Fetcher;
   ACCESS_CLIENT_ID?: string;
   ACCESS_CLIENT_SECRET?: string;
   ACCESS_AUTHORIZATION_URL?: string;

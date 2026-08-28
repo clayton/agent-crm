@@ -1,4 +1,3 @@
-import type { ExecutionContext } from "@cloudflare/workers-types";
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { CRM_READ, CRM_WRITE, OFFLINE_ACCESS } from "./scopes";
 import {

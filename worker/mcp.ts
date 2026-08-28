@@ -1,8 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod/v4";
-import type { D1Database } from "@cloudflare/workers-types";
-import type { ExecutionContext } from "@cloudflare/workers-types";
 import * as service from "./service";
 import { CRMError } from "./service";
 import { scopesAllowTool } from "./scopes";

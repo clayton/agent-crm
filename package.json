@@ -21,10 +21,10 @@
     "zod": "^4.2.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.8.0",
-    "@cloudflare/workers-types": "^4.20250906.0",
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@types/node": "^26.4.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0",
-    "wrangler": "4.35.0"
+    "vitest": "^4.1.0",
+    "wrangler": "^4.127.1"
   }
 }
