@@ -99,6 +99,37 @@ describe("agent-crm worker", () => {
     const data = await res.json();
     expect(data.authorization_endpoint).toContain("/authorize");
     expect(data.token_endpoint).toContain("/oauth/token");
+    expect(data.code_challenge_methods_supported).toEqual(["S256"]);
+  });
+
+  it("rejects hostile Origin preflight without ACAO", async () => {
+    const res = await fetchWorker("/mcp", "crm-agent.services.c18h.net", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://evil.example",
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+
+  it("allows trusted dashboard Origin preflight", async () => {
+    const res = await fetchWorker("/mcp", "crm-agent.services.c18h.net", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://crm.services.c18h.net",
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://crm.services.c18h.net");
+  });
+
+  it("returns 400 for authorize without required params", async () => {
+    const res = await fetchWorker("/authorize", "crm-agent.services.c18h.net");
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/client_id/i);
   });
 });
 

@@ -11,6 +11,7 @@ import { handleApiRequest } from "./api";
 import { buildMcpHandler } from "./mcp";
 import { dashboardJson } from "./dashboard";
 import { authHandler } from "./auth-handler";
+import { enforceTrustedOrigin } from "./origin";
 
 export interface Env extends Cloudflare.Env {
   ACCESS_TEAM_DOMAIN?: string;
@@ -150,6 +151,8 @@ const oauthWorker = new OAuthProvider({
   apiRoute: "/mcp",
   apiHandler: mcpApiHandler as never,
   defaultHandler: defaultHandler as never,
+  allowPlainPKCE: false,
+  scopesSupported: ["crm:read", "crm:write", "offline_access"],
 });
 
 const AGENT_ONLY_PREFIXES = ["/mcp", "/oauth", "/.well-known", "/authorize", "/callback"];
@@ -177,6 +180,8 @@ export default {
       );
       if (blocked) return new Response("Not found", { status: 404 });
     }
+    const originBlock = enforceTrustedOrigin(request, env);
+    if (originBlock) return originBlock;
     return oauthWorker.fetch(request, env, ctx);
   },
 };
