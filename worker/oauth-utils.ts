@@ -126,6 +126,23 @@ export async function exchangeUpstreamCode(params: {
   return { accessToken: json.access_token, idToken: json.id_token };
 }
 
+/** Per-app Access OIDC issuer: https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<client-id> */
+export function accessOidcIssuer(env: {
+  ACCESS_ISSUER?: string;
+  ACCESS_AUTHORIZATION_URL?: string;
+  ACCESS_TOKEN_URL?: string;
+  ACCESS_JWKS_URL?: string;
+}): string {
+  if (env.ACCESS_ISSUER) return env.ACCESS_ISSUER.replace(/\/$/, "");
+  for (const url of [env.ACCESS_AUTHORIZATION_URL, env.ACCESS_TOKEN_URL, env.ACCESS_JWKS_URL]) {
+    if (!url) continue;
+    const parsed = new URL(url);
+    const match = parsed.pathname.match(/^(\/cdn-cgi\/access\/sso\/oidc\/[^/]+)/);
+    if (match) return `${parsed.origin}${match[1]}`;
+  }
+  throw new OAuthFlowError("OAuth issuer not configured", 503);
+}
+
 export function decodeBase64Url(segment: string): string {
   const b64 = segment.replace(/-/g, "+").replace(/_/g, "/");
   const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);

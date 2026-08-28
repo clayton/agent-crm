@@ -20,6 +20,7 @@ export interface Env extends Cloudflare.Env {
   ACCESS_AUTHORIZATION_URL?: string;
   ACCESS_TOKEN_URL?: string;
   ACCESS_JWKS_URL?: string;
+  ACCESS_ISSUER?: string;
   COOKIE_ENCRYPTION_KEY?: string;
   DEV_SKIP_ACCESS?: string;
 }

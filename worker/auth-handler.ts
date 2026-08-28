@@ -9,6 +9,7 @@ import {
   upstreamAuthorizeUrl,
   validateOAuthState,
   verifyCsrf,
+  accessOidcIssuer,
   verifyIdToken,
 } from "./oauth-utils";
 type AuthEnv = {
@@ -19,6 +20,7 @@ type AuthEnv = {
   ACCESS_AUTHORIZATION_URL?: string;
   ACCESS_TOKEN_URL?: string;
   ACCESS_JWKS_URL?: string;
+  ACCESS_ISSUER?: string;
   COOKIE_ENCRYPTION_KEY?: string;
 };
 
@@ -127,12 +129,11 @@ export const authHandler = {
           redirectUri: new URL("/callback", request.url).href,
           codeVerifier,
         });
-        const teamDomain = "labountylabs.cloudflareaccess.com";
         const user = await verifyIdToken(
           idToken,
           env.ACCESS_JWKS_URL,
           env.ACCESS_CLIENT_ID,
-          `https://${teamDomain}`,
+          accessOidcIssuer(env),
         );
         const scope = requestedScopes(oauthReqInfo.scope);
         const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
