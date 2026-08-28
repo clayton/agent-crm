@@ -9,9 +9,10 @@ import {
 } from "./access";
 import { handleApiRequest } from "./api";
 import { buildMcpHandler } from "./mcp";
-import { dashboardJson } from "./dashboard";
+import { dashboardJson, dashboardProspectDetail } from "./dashboard";
 import { authHandler } from "./auth-handler";
 import { enforceTrustedOrigin } from "./origin";
+import { CRMError } from "./service";
 
 export interface Env extends Cloudflare.Env {
   ACCESS_TEAM_DOMAIN?: string;
@@ -84,6 +85,18 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
   if (url.pathname.startsWith("/assets/")) {
     return env.ASSETS.fetch(request);
   }
+  const prospectDetailMatch = url.pathname.match(/^\/api\/dashboard\/prospects\/([^/]+)$/);
+  if (prospectDetailMatch) {
+    try {
+      const data = await dashboardProspectDetail(env.DB, decodeURIComponent(prospectDetailMatch[1]));
+      return json(data);
+    } catch (error) {
+      if (error instanceof CRMError) {
+        return json({ error: error.message, type: "CRMError" }, 400);
+      }
+      throw error;
+    }
+  }
   if (url.pathname === "/api/dashboard") {
     const project = url.searchParams.get("project");
     const includeTerminal = url.searchParams.get("include_terminal") === "true";
@@ -133,6 +146,9 @@ const defaultHandler = {
       if (error instanceof AccessError) {
         safeLog("access_denied", { path: url.pathname });
         return json({ error: error.message }, 401);
+      }
+      if (error instanceof CRMError) {
+        return json({ error: error.message, type: "CRMError" }, 400);
       }
       safeLog("worker_error", { path: url.pathname });
       return json({ error: "Internal server error" }, 500);

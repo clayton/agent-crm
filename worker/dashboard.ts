@@ -17,18 +17,11 @@ export async function dashboardData(
   for (const projectRow of selectedProjects) {
     const slug = String(projectRow.slug);
     const pipeline = await service.pipeline(db, slug, includeTerminal);
-    const risks = (await service.pipelineRisks(db, slug)).risks;
-    const actions = (await service.nextActions(db, slug)).actions;
-    const prospectIds: string[] = [];
-    for (const stage of pipeline.stages as Array<{ prospects: Array<{ id: string }> }>) {
-      for (const prospect of stage.prospects) prospectIds.push(prospect.id);
-    }
-    const details: Record<string, unknown> = {};
-    for (const prospectId of prospectIds) {
-      const detail = await service.getProspect(db, prospectId);
-      detail.timeline = await service.timeline(db, "prospect", prospectId, 50);
-      details[prospectId] = detail;
-    }
+    const risksResult = await service.pipelineRisks(db, slug);
+    const risks = risksResult.risks;
+    const actions = (
+      await service.nextActions(db, slug, null, 5, null, "balanced", null, risks as Record<string, unknown>[])
+    ).actions;
     results.push({
       project: {
         id: projectRow.id,
@@ -41,7 +34,6 @@ export async function dashboardData(
       actions,
       risks,
       forecast: await service.forecast(db, slug),
-      prospect_details: details,
     });
   }
   return {
@@ -55,4 +47,10 @@ export async function dashboardData(
 
 export async function dashboardJson(db: D1Database, project?: string | null, includeTerminal = false) {
   return dashboardData(db, project, includeTerminal);
+}
+
+export async function dashboardProspectDetail(db: D1Database, prospectId: string): Promise<Record<string, unknown>> {
+  const detail = await service.getProspect(db, prospectId);
+  detail.timeline = await service.timeline(db, "prospect", prospectId, 50);
+  return detail;
 }

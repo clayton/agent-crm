@@ -73,6 +73,65 @@ describe("agent-crm worker", () => {
     expect(Array.isArray(data.projects)).toBe(true);
   });
 
+  it("dashboard api omits eager prospect_details", async () => {
+    await service.createProject(env.DB, "Lazy", "lazy:actor", "lazy");
+    const p1 = await service.createProspect(env.DB, "lazy", "Lead One", "lazy:actor");
+    const p2 = await service.createProspect(env.DB, "lazy", "Lead Two", "lazy:actor");
+    await service.addNote(env.DB, "lazy", "lazy:actor", "Note one", p1.id as string);
+    await service.addNote(env.DB, "lazy", "lazy:actor", "Note two", p2.id as string);
+    const res = await fetchWorker("/api/dashboard?project=lazy", "crm.services.c18h.net");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const project = data.projects[0];
+    expect(project.prospect_details).toBeUndefined();
+    expect(project.pipeline.total_prospects).toBe(2);
+  });
+
+  it("dashboard prospect detail endpoint returns dossier", async () => {
+    await service.createProject(env.DB, "Det", "det:actor", "det");
+    const prospect = await service.createProspect(env.DB, "det", "Detail Lead", "det:actor");
+    await service.addNote(env.DB, "det", "det:actor", "Detail note", prospect.id as string, undefined, undefined, "research");
+    const res = await fetchWorker(
+      `/api/dashboard/prospects/${prospect.id}`,
+      "crm.services.c18h.net",
+    );
+    expect(res.status).toBe(200);
+    const detail = await res.json();
+    expect(detail.name).toBe("Detail Lead");
+    expect(detail.notes).toHaveLength(1);
+    expect(Array.isArray(detail.timeline)).toBe(true);
+  });
+
+  it("dashboard prospect detail returns 400 for missing id", async () => {
+    const res = await fetchWorker(
+      "/api/dashboard/prospects/missing-prospect-id",
+      "crm.services.c18h.net",
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.type).toBe("CRMError");
+    expect(body.error).toContain("Prospect not found");
+  });
+
+  it("api createTask accepts title-only body", async () => {
+    await service.createProject(env.DB, "Task", "task:actor", "task-proj");
+    const body = JSON.stringify({ project: "task-proj", title: "Follow up" });
+    const headers = {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "idem-task-1",
+      "X-Dev-Service-Token": "svc-a",
+    };
+    const res = await fetchWorker("/v1/projects/task-proj/tasks", "crm-agent.services.c18h.net", {
+      method: "POST",
+      body,
+      headers,
+    });
+    expect(res.status).toBe(200);
+    const task = await res.json();
+    expect(task.title).toBe("Follow up");
+    expect(task.priority).toBe("normal");
+  });
+
   it("rejects write without Idempotency-Key", async () => {
     await service.createProject(env.DB, "Key", "key:actor", "key-proj");
     const res = await fetchWorker("/v1/projects/key-proj/companies", "crm-agent.services.c18h.net", {

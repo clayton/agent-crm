@@ -3,9 +3,10 @@
 
   const app = document.getElementById("app");
   const dialog = document.getElementById("detail-dialog");
-  const embedded = JSON.parse(document.getElementById("crm-data").textContent || "null");
-  let data = embedded;
+  let data = null;
   let selected = "all";
+  const detailCache = new Map();
+  let detailRequestSeq = 0;
 
   const escapeHtml = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -161,11 +162,7 @@
     document.querySelectorAll("[data-prospect]").forEach((card) => card.addEventListener("click", () => showDetail(card.dataset.project, card.dataset.prospect)));
   };
 
-  const showDetail = (projectSlug, prospectId) => {
-    const project = data.projects.find((item) => item.project.slug === projectSlug);
-    const detail = project?.prospect_details?.[prospectId];
-    if (!detail) return;
-    const risks = project.risks.filter((risk) => risk.prospect_id === prospectId);
+  const renderDetail = (project, detail, risks) => {
     const facts = [
       ["Stage", detail.stage_name || titleCase(detail.stage)],
       ["Owner", detail.owner || "Unassigned"],
@@ -180,10 +177,11 @@
     const list = (items, body, meta) => items.length
       ? items.map((item) => `<div class="detail-item">${escapeHtml(body(item))}<div class="detail-item-meta">${escapeHtml(meta(item))}</div></div>`).join("")
       : '<div class="empty-detail">None recorded.</div>';
+    const title = escapeHtml(detail.company_name || detail.name);
     dialog.innerHTML = `<div class="detail-wrap">
       <button class="detail-close" type="button" aria-label="Close">×</button>
       <div class="detail-kicker">${escapeHtml(project.project.name)} · ${escapeHtml(detail.stage_name || detail.stage)}</div>
-      <h2 class="detail-title">${escapeHtml(detail.company_name || detail.name)}</h2>
+      <h2 class="detail-title" id="detail-title">${title}</h2>
       <p class="detail-subtitle">${escapeHtml(detail.contact_name || detail.name)}${detail.contact_title ? ` · ${escapeHtml(detail.contact_title)}` : ""}</p>
       <div class="detail-grid">${facts.map(([label, value]) => `<div class="detail-fact"><div class="detail-label">${escapeHtml(label)}</div><div class="detail-value">${escapeHtml(value)}</div></div>`).join("")}</div>
       ${risks.length ? `<section class="detail-section"><h3>Risks</h3>${list(risks, (item) => item.message, (item) => `${titleCase(item.severity)} · ${item.recommended_action}`)}</section>` : ""}
@@ -192,12 +190,47 @@
       <section class="detail-section"><h3>Interactions</h3>${list(detail.interactions || [], (item) => item.summary, (item) => `${titleCase(item.channel)} · ${titleCase(item.direction)} · ${shortDate(item.occurred_at)}`)}</section>
       <section class="detail-section"><h3>Activity</h3>${list(detail.timeline || [], (item) => titleCase(item.action), (item) => `${item.actor} · ${shortDate(item.occurred_at)}`)}</section>
     </div>`;
+    dialog.setAttribute("aria-labelledby", "detail-title");
     dialog.querySelector(".detail-close").addEventListener("click", () => dialog.close());
+  };
+
+  const showDetail = async (projectSlug, prospectId) => {
+    const requestSeq = ++detailRequestSeq;
+    const project = data.projects.find((item) => item.project.slug === projectSlug);
+    if (!project) return;
+    const cacheKey = `${projectSlug}:${prospectId}`;
+    let detail = detailCache.get(cacheKey) ?? project.prospect_details?.[prospectId];
+    const risks = project.risks.filter((risk) => risk.prospect_id === prospectId);
+    dialog.innerHTML = '<div class="detail-wrap"><div class="empty-detail">Loading prospect details…</div></div>';
     dialog.showModal();
+    if (!detail) {
+      try {
+        const response = await fetch(`/api/dashboard/prospects/${encodeURIComponent(prospectId)}`);
+        if (requestSeq !== detailRequestSeq) return;
+        if (!response.ok) throw new Error(`Failed to load prospect (${response.status})`);
+        detail = await response.json();
+        detailCache.set(cacheKey, detail);
+      } catch (error) {
+        if (requestSeq !== detailRequestSeq) return;
+        dialog.innerHTML = `<div class="detail-wrap"><button class="detail-close" type="button" aria-label="Close">×</button><div class="error-state">${escapeHtml(error.message)}</div></div>`;
+        dialog.querySelector(".detail-close").addEventListener("click", () => dialog.close());
+        return;
+      }
+    }
+    if (requestSeq !== detailRequestSeq) return;
+    renderDetail(project, detail, risks);
   };
 
   const start = async () => {
+    app.setAttribute("aria-busy", "true");
     try {
+      let embedded = null;
+      try {
+        embedded = JSON.parse(document.getElementById("crm-data")?.textContent || "null");
+      } catch (_) {
+        embedded = null;
+      }
+      data = embedded;
       if (!data) {
         const response = await fetch("/api/dashboard");
         if (!response.ok) throw new Error(`Dashboard request failed (${response.status})`);
@@ -210,6 +243,8 @@
       render();
     } catch (error) {
       app.innerHTML = `<div class="error-state">${escapeHtml(error.message)}</div>`;
+    } finally {
+      app.removeAttribute("aria-busy");
     }
   };
 

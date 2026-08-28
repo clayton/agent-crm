@@ -199,6 +199,8 @@ const operations: Record<
         body.title as string,
         body.due_at as string | undefined,
         body.prospect_id as string | undefined,
+        undefined,
+        undefined,
         body.description as string | undefined,
         (body.priority as string) ?? "normal",
         body.assigned_to as string | undefined,

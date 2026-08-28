@@ -928,34 +928,47 @@ export async function pipeline(
   }
   stageSql += " ORDER BY position";
   const stageRows = await all(db, stageSql, ...stageParams);
-  const stages: Record<string, unknown>[] = [];
-  let total = 0;
-  for (const stageRow of stageRows) {
-    const stageData = rowDict(stageRow) ?? {};
-    const prospectRows = await all(
-      db,
-      `SELECT p.id, p.name, p.owner, p.priority, p.fit_score, p.next_contact_at,
+  let prospectSql = `SELECT p.id, p.name, p.owner, p.priority, p.fit_score, p.next_contact_at,
               p.last_contacted_at, p.updated_at, p.version, p.amount,
               p.currency, p.expected_close_at, p.forecast_category,
-              p.probability, p.next_step, p.next_step_due_at, p.custom_json,
+              p.probability, p.next_step, p.next_step_due_at, p.custom_json, p.stage_id,
               c.full_name AS contact_name, co.name AS company_name
        FROM prospects p
        LEFT JOIN contacts c ON c.id=p.contact_id
        LEFT JOIN companies co ON co.id=p.company_id
-       WHERE p.stage_id=?
-       ORDER BY CASE p.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
-                WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 2 END,
-                p.updated_at DESC`,
-      stageData.id,
-    );
-    const prospects = prospectRows.map((row) => {
-      const p = rowDict(row) ?? {};
+       WHERE p.project_id=?`;
+  const prospectParams: unknown[] = [projectRow.id];
+  if (!includeTerminal) {
+    prospectSql += " AND p.stage_id IN (SELECT id FROM pipeline_stages WHERE project_id=? AND terminal=0)";
+    prospectParams.push(projectRow.id);
+  }
+  const allProspectRows = await all(db, prospectSql, ...prospectParams);
+  const prospectsByStage = new Map<string, (typeof allProspectRows)[number][]>();
+  for (const row of allProspectRows) {
+    const stageId = String(row.stage_id);
+    const list = prospectsByStage.get(stageId) ?? [];
+    list.push(row);
+    prospectsByStage.set(stageId, list);
+  }
+  const stages: Record<string, unknown>[] = [];
+  let total = 0;
+  for (const stageRow of stageRows) {
+    const stageData = rowDict(stageRow) ?? {};
+    const prospectRows = prospectsByStage.get(String(stageData.id)) ?? [];
+    const prospects = prospectRows.map((row) => rowDict(row) ?? {});
+    const prospectsWithMeta = prospects.map((p) => {
       const [signalTier, priorityWeight] = signalPriority(p);
       p.signal_tier = signalTier;
       p.priority_weight = priorityWeight;
       return p;
     });
-    prospects.sort((a, b) => {
+    prospectsWithMeta.sort((a, b) => {
+      const priorityOrder: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+      const pa = priorityOrder[String(a.priority)] ?? 2;
+      const pb = priorityOrder[String(b.priority)] ?? 2;
+      if (pa !== pb) return pa - pb;
+      const updated = String(b.updated_at).localeCompare(String(a.updated_at));
+      if (updated !== 0) return updated;
       const pw = Number(b.priority_weight) - Number(a.priority_weight);
       if (pw !== 0) return pw;
       return String(a.name).localeCompare(String(b.name));
@@ -966,10 +979,10 @@ export async function pipeline(
       position: stageData.position,
       terminal: Boolean(stageData.terminal),
       outcome: stageData.outcome,
-      count: prospects.length,
-      prospects,
+      count: prospectsWithMeta.length,
+      prospects: prospectsWithMeta,
     });
-    total += prospects.length;
+    total += prospectsWithMeta.length;
   }
   return {
     project: { id: projectRow.id, slug: projectRow.slug, name: projectRow.name },
@@ -1254,6 +1267,19 @@ export async function pipelineRisks(
   );
   const prospects = prospectRows.map((row) => rowDict(row) ?? {});
   const risks: Record<string, unknown>[] = [];
+  const openTaskProspects = new Set<string>();
+  const prospectIds = prospects.map((item) => String(item.id));
+  for (let i = 0; i < prospectIds.length; i += 50) {
+    const chunk = prospectIds.slice(i, i + 50);
+    if (!chunk.length) continue;
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = await all(
+      db,
+      `SELECT DISTINCT prospect_id FROM tasks WHERE status='open' AND prospect_id IN (${placeholders})`,
+      ...chunk,
+    );
+    for (const row of rows) openTaskProspects.add(String(row.prospect_id));
+  }
 
   const add = (
     prospect: Row,
@@ -1275,11 +1301,7 @@ export async function pipelineRisks(
   };
 
   for (const item of prospects) {
-    const openTask = await first(
-      db,
-      "SELECT 1 FROM tasks WHERE prospect_id=? AND status='open' LIMIT 1",
-      item.id,
-    );
+    const openTask = openTaskProspects.has(String(item.id));
     if (!item.owner) {
       add(item, "missing_owner", "high", "Active prospect has no owner.", "Assign an accountable owner.");
     }
@@ -1353,9 +1375,10 @@ export async function nextActions(
   project: string,
   actor?: string | null,
   limit = 5,
-  staleDays = 30,
+  staleDays?: number | null,
   mode = "balanced",
   timeBudget?: number | null,
+  precomputedRisks?: Record<string, unknown>[] | null,
 ): Promise<Record<string, unknown>> {
   if (!["balanced", "close", "pipeline_build"].includes(mode)) {
     throw new CRMError("Mode must be balanced, close, or pipeline_build.");
@@ -1428,7 +1451,8 @@ export async function nextActions(
     });
   }
 
-  const risks = ((await pipelineRisks(db, project, false, null, staleDays)).risks as Record<string, unknown>[]) ?? [];
+  const risks = precomputedRisks
+    ?? (((await pipelineRisks(db, project, false, null, staleDays ?? null)).risks as Record<string, unknown>[]) ?? []);
   const riskScore: Record<string, number> = { critical: 90, high: 75, medium: 55, low: 35 };
   for (const risk of risks) {
     if (actor) {
