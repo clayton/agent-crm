@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
-import { z } from "zod";
+import { z } from "zod/v4";
 import type { D1Database } from "@cloudflare/workers-types";
 import * as service from "./service";
 import { CRMError } from "./service";
@@ -80,32 +80,34 @@ function authFromContext(): McpAuth {
   return { actor, scopes };
 }
 
+type ToolInputSchema = NonNullable<Parameters<McpServer["registerTool"]>[1]["inputSchema"]>;
+
 function registerTools(server: McpServer, db: D1Database): void {
   for (const tool of toolDefs) {
-    // ponytail: zod 3/4 peer mismatch with @modelcontextprotocol/server typings
-    (server.registerTool as (name: string, config: object, cb: (args: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[] }>) => void)(
+    server.registerTool(
       tool.name,
-      { description: tool.description, inputSchema: tool.schema },
+      { description: tool.description, inputSchema: tool.schema as unknown as ToolInputSchema },
       async (args: Record<string, unknown>) => {
         const auth = authFromContext();
         if (!scopesAllowTool(auth.scopes, tool.name, args)) {
           throw new CRMError("Insufficient OAuth scope for this tool.");
         }
         const result = await tool.handler(db, auth.actor, args);
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
       },
     );
   }
 }
 
+export function createMcpServer(db: D1Database): McpServer {
+  const server = new McpServer({ name: "agent-crm", version: "1.0.0" });
+  registerTools(server, db);
+  return server;
+}
+
 export function buildMcpHandler(agentHost: string, dashboardHost: string) {
   return (request: Request, env: { DB: D1Database }, ctx: ExecutionContext) => {
-    const createServer = () => {
-      const server = new McpServer({ name: "agent-crm", version: "1.0.0" });
-      registerTools(server, env.DB);
-      return server;
-    };
-    return createMcpHandler(createServer, {
+    return createMcpHandler(() => createMcpServer(env.DB), {
       route: "/mcp",
       allowedHostnames: [agentHost],
       allowedOriginHostnames: [dashboardHost],
