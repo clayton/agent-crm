@@ -1,9 +1,10 @@
 __pycache__/
 *.py[cod]
-*.sqlite
-*.sqlite3
+*.sqlite*
 .DS_Store
-.env
+.env*
+!.env.example
+crm-dashboard*.html
 .venv/
 .pytest_cache/
 .ruff_cache/
@@ -11,4 +12,10 @@ dist/
 build/
 *.egg-info/
 .wrangler/
+.dev.vars
+.firecrawl/
+*.sql.dump
+crm-export/
 .playwright-mcp/
+node_modules/
+worker-configuration.d.ts

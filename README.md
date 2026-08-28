@@ -178,12 +178,32 @@ The v0.3 action engine ranks work across tasks and pipeline risks. Every recomme
 
 The MCP equivalent is `crm_pipeline_risks`.
 
+## Contact enrichment
+
+Agent CRM can research one linked contact and company, then propose identity and work-email updates without applying them:
+
+```bash
+./bin/crm contact enrich con_ID --actor codex
+./bin/crm contact apply-enrichment enr_ID --actor codex
+# After reviewing a flagged result:
+./bin/crm contact apply-enrichment enr_ID --approve-manual-review --actor codex
+```
+
+The first command uses progressive Serper searches to require official company evidence or multiple matching sources. It stops before email lookup when identity remains unresolved. Hunter runs first; FullEnrich runs only after a Hunter miss. Catch-all, uncertain, and conflicting results require manual review. The command records queries, evidence, raw and normalized provider status, retrieval time, latency, credits, and proposed fields in an append-only attempt. CLI output masks proposed emails.
+
+Writes require a separate `apply-enrichment` call. Flagged results also require `--approve-manual-review`. Applying an attempt fills blank contact fields and never replaces an existing human value. Agent CRM still does not send outreach.
+
+Set `SERPER_API_KEY`, `HUNTER_API_KEY`, and `FULLENRICH_API_KEY`. To read keys from 1Password instead, set the matching `*_OP_REF` variables to secret references and sign in with `op`. Keys stay in request headers and are never stored in CRM records. Keep personal vault paths out of this public repository.
+
+FullEnrich is asynchronous. The minimal CLI polls twice, five minutes apart by default, matching its documentation. Use `--fullenrich-polls` and `--poll-interval` for an interactive run. A pending attempt stays recorded and can be retried later.
+
 ## SDR workbench
 
 Agent CRM prepares top-of-funnel work without sending messages:
 
 ```bash
 ./bin/crm sdr-queue pipeline
+./bin/crm experiment-report pipeline recall-first-v1-phoenix-30
 ./bin/crm research-brief pro_ID
 ./bin/crm outreach-brief pro_ID
 ```
@@ -203,6 +223,44 @@ The core test suite has no third-party dependencies:
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
+
+## Cloud service (staging)
+
+Agent CRM can run on Cloudflare Workers with D1, split across two hostnames:
+
+- `crm.services.c18h.net` — human dashboard (Cloudflare Access browser identity)
+- `crm-agent.services.c18h.net` — MCP OAuth (`/mcp`) and service-token API (`/v1/*`)
+
+Local development:
+
+```bash
+npm install
+npm run dev
+```
+
+Worker tests and typecheck:
+
+```bash
+npm run check
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+```
+
+Python remote API mode (Access service token):
+
+```bash
+export CRM_API_URL=https://crm-agent.services.c18h.net
+export CF_ACCESS_CLIENT_ID=...
+export CF_ACCESS_CLIENT_SECRET=...
+./bin/crm project list
+```
+
+Data export for D1 migration (uses consistent SQLite backup; never commit output):
+
+```bash
+python3 scripts/export-cloud-data.py --db ~/.codex/memories/agent-crm/crm.sqlite3 --backup /tmp/crm-backup.sqlite3 --output /tmp/crm-export.sql
+```
+
+Production cutover, Access applications, OAuth secrets, and production D1 import are intentionally deferred until review.
 
 ## License
 

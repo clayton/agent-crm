@@ -1,0 +1,91 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "agent-crm-staging",
+  "main": "worker/index.ts",
+  "compatibility_date": "2025-08-15",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "vars": {
+    "DASHBOARD_HOST": "crm.services.c18h.net",
+    "AGENT_HOST": "crm-agent.services.c18h.net",
+    "ACCESS_AUD_DASHBOARD": "8d7deb0558a4d2fb5ac3b1bdff22141f315b4fb0125f19f8f1d2e8102844b191",
+    "ACCESS_AUD_API": "fc21e9ffc40360ebe9bb6561c20a30510b23b382a4662438fdf9c00470c30ddd",
+    "DEV_SKIP_ACCESS": "true"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "agent-crm-staging",
+      "database_id": "ed4dee51-a70d-4b7b-86ba-ca72f30dd8b0",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "8b54ab959a4b4aa6970f0684f0b8247a"
+    }
+  ],
+  "workers_dev": false,
+  "env": {
+    "staging": {
+      "name": "agent-crm-staging",
+      "vars": {
+        "DASHBOARD_HOST": "crm.services.c18h.net",
+        "AGENT_HOST": "crm-agent.services.c18h.net",
+        "ACCESS_AUD_DASHBOARD": "8d7deb0558a4d2fb5ac3b1bdff22141f315b4fb0125f19f8f1d2e8102844b191",
+        "ACCESS_AUD_API": "fc21e9ffc40360ebe9bb6561c20a30510b23b382a4662438fdf9c00470c30ddd",
+        "DEV_SKIP_ACCESS": "false"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "agent-crm-staging",
+          "database_id": "ed4dee51-a70d-4b7b-86ba-ca72f30dd8b0",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "OAUTH_KV",
+          "id": "8b54ab959a4b4aa6970f0684f0b8247a"
+        }
+      ]
+    },
+    "production": {
+      "name": "agent-crm",
+      "vars": {
+        "DASHBOARD_HOST": "crm.services.c18h.net",
+        "AGENT_HOST": "crm-agent.services.c18h.net",
+        "ACCESS_AUD_DASHBOARD": "8d7deb0558a4d2fb5ac3b1bdff22141f315b4fb0125f19f8f1d2e8102844b191",
+        "ACCESS_AUD_API": "fc21e9ffc40360ebe9bb6561c20a30510b23b382a4662438fdf9c00470c30ddd",
+        "ACCESS_TEAM_DOMAIN": "labountylabs.cloudflareaccess.com"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "agent-crm",
+          "database_id": "be7dae0a-ee66-4968-9070-b0cda6e370f8",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "OAUTH_KV",
+          "id": "04d035c02a7540358d8b4cc7301131cb"
+        }
+      ],
+      "routes": [
+        { "pattern": "crm.services.c18h.net", "custom_domain": true },
+        { "pattern": "crm-agent.services.c18h.net", "custom_domain": true }
+      ]
+    }
+  }
+}

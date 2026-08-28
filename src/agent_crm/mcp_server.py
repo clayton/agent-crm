@@ -284,6 +284,13 @@ def crm_sdr_queue(project: str, limit: int = 25) -> dict:
 
 
 @mcp.tool()
+def crm_experiment_report(project: str, experiment_id: str) -> dict:
+    """Report experiment cohort outcomes for prospects tagged with an experiment_id."""
+    with db() as conn:
+        return service.experiment_report(conn, project, experiment_id)
+
+
+@mcp.tool()
 def crm_research_brief(prospect_id: str) -> dict:
     """Separate sourced facts, unsourced context, and missing prospect research."""
     with db() as conn:

@@ -10,6 +10,7 @@ from typing import Any
 from . import dashboard as dashboard_ui
 from . import service
 from .db import connect, database_path
+from .remote import RemoteCRMClient, remote_enabled
 
 
 def json_value(value: str) -> Any:
@@ -85,6 +86,15 @@ def parser() -> argparse.ArgumentParser:
     ct_update.add_argument("contact_id")
     ct_update.add_argument("--fields", type=json_value, required=True)
     add_write(ct_update)
+    ct_enrich = contact_commands.add_parser("enrich", help="Research identity and propose work-email enrichment")
+    ct_enrich.add_argument("contact_id")
+    ct_enrich.add_argument("--fullenrich-polls", type=int, choices=range(1, 13), default=2)
+    ct_enrich.add_argument("--poll-interval", type=int, default=300)
+    add_write(ct_enrich)
+    ct_apply = contact_commands.add_parser("apply-enrichment", help="Apply an approved enrichment attempt")
+    ct_apply.add_argument("attempt_id")
+    ct_apply.add_argument("--approve-manual-review", action="store_true")
+    add_write(ct_apply)
 
     prospect = commands.add_parser("prospect")
     prospect_commands = prospect.add_subparsers(dest="action", required=True)
@@ -233,6 +243,10 @@ def parser() -> argparse.ArgumentParser:
     sdr_queue.add_argument("project")
     sdr_queue.add_argument("--limit", type=int, default=25)
 
+    experiment = commands.add_parser("experiment-report", help="Summarize logged outcomes by signal cohort")
+    experiment.add_argument("project")
+    experiment.add_argument("experiment_id")
+
     research_brief = commands.add_parser("research-brief")
     research_brief.add_argument("prospect_id")
 
@@ -255,7 +269,66 @@ def compact_fields(args: argparse.Namespace, exclude: set[str]) -> dict:
     return {key: value for key, value in vars(args).items() if key not in exclude and value is not None}
 
 
+def run_remote(args: argparse.Namespace) -> Any:
+    client = RemoteCRMClient()
+    if args.command == "project":
+        if args.action == "create":
+            return client.create_project(args.name, args.slug, args.description)
+        if args.action == "list":
+            return client.list_projects()
+        raise RuntimeError("Remote mode supports project create/list only for get")
+    if args.command == "company":
+        if args.action == "create":
+            values = compact_fields(args, {"db", "command", "action", "project", "actor", "name"})
+            return client.create_company(args.project, args.name, **values)
+        if args.action == "get":
+            return client.get_company(args.company_id)
+        if args.action == "list":
+            return client.list_companies(args.project, args.limit)
+        return client.update_company(args.company_id, args.fields)
+    if args.command == "prospect":
+        if args.action == "create":
+            values = compact_fields(args, {"db", "command", "action", "project", "actor", "name", "stage"})
+            return client.create_prospect(args.project, args.name, stage=args.stage, **values)
+        if args.action == "get":
+            return client.get_prospect(args.prospect_id)
+        if args.action == "list":
+            return client.list_prospects(args.project, args.stage, args.owner, args.limit)
+        if args.action == "update":
+            return client.update_prospect(args.prospect_id, args.fields, args.expected_version)
+        return client.transition_prospect(args.prospect_id, args.stage, args.reason, args.expected_version)
+    if args.command == "note":
+        values = compact_fields(args, {"db", "command", "action", "project", "actor", "body"})
+        return client.add_note(args.project, args.body, **values)
+    if args.command == "task":
+        if args.action == "create":
+            values = compact_fields(args, {"db", "command", "action", "project", "actor", "title"})
+            return client.create_task(args.project, args.title, **values)
+        return client.complete_task(args.task_id)
+    if args.command == "pipeline":
+        return client.pipeline(args.project, args.include_terminal)
+    if args.command == "forecast":
+        return client.forecast(args.project, args.period)
+    if args.command == "search":
+        return client.search(args.project, args.query, args.limit)
+    if args.command == "timeline":
+        return client.timeline(args.entity_type, args.entity_id, args.limit)
+    raise RuntimeError(f"Command not supported in remote mode: {args.command}")
+
+
 def run(args: argparse.Namespace) -> Any:
+    if remote_enabled() and args.command == "contact":
+        raise RuntimeError(
+            "contact commands (including enrich and apply-enrichment) are not available in remote mode yet"
+        )
+    if remote_enabled() and args.command == "init":
+        raise RuntimeError("init is not available in remote mode; the cloud database is managed by the Worker")
+    if remote_enabled() and args.command == "dashboard" and args.action == "export":
+        raise RuntimeError(
+            "dashboard export is not available in remote mode; use https://crm.services.c18h.net"
+        )
+    if remote_enabled() and args.command not in {"dashboard", "contact"}:
+        return run_remote(args)
     if args.command == "dashboard":
         if args.action == "export":
             return dashboard_ui.export_dashboard(
@@ -292,6 +365,14 @@ def run(args: argparse.Namespace) -> Any:
                 return service.get_contact(conn, args.contact_id)
             if args.action == "list":
                 return service.list_contacts(conn, args.project, args.limit)
+            if args.action == "enrich":
+                return service.enrich_contact(
+                    conn, args.contact_id, actor(args), args.fullenrich_polls, args.poll_interval,
+                )
+            if args.action == "apply-enrichment":
+                return service.apply_contact_enrichment(
+                    conn, args.attempt_id, actor(args), args.approve_manual_review,
+                )
             return service.update_contact(conn, args.contact_id, actor(args), args.fields)
         if args.command == "prospect":
             if args.action == "create":
@@ -350,6 +431,8 @@ def run(args: argparse.Namespace) -> Any:
             )
         if args.command == "sdr-queue":
             return service.sdr_queue(conn, args.project, args.limit)
+        if args.command == "experiment-report":
+            return service.experiment_report(conn, args.project, args.experiment_id)
         if args.command == "research-brief":
             return service.research_brief(conn, args.prospect_id)
         if args.command == "outreach-brief":

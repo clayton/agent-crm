@@ -113,7 +113,10 @@ class CRMTest(unittest.TestCase):
         self.assertTrue(any(item["prospect_name"] == "Quiet account" for item in result["actions"]))
 
     def test_pipeline_groups_prospects_in_stage_order(self) -> None:
-        service.create_prospect(self.conn, "imago", "First lead", "codex")
+        service.create_prospect(
+            self.conn, "imago", "First lead", "codex",
+            custom={"signal_tier": "C", "priority_weight": 50},
+        )
         qualified = service.create_prospect(self.conn, "imago", "Qualified lead", "codex")
         service.transition_prospect(self.conn, qualified["id"], "researching", "codex")
         service.transition_prospect(self.conn, qualified["id"], "qualified", "codex")
@@ -122,6 +125,8 @@ class CRMTest(unittest.TestCase):
 
         self.assertEqual(result["stages"][0]["key"], "identified")
         self.assertEqual(result["stages"][0]["count"], 1)
+        self.assertEqual(result["stages"][0]["prospects"][0]["signal_tier"], "C")
+        self.assertEqual(result["stages"][0]["prospects"][0]["priority_weight"], 50)
         self.assertEqual(result["stages"][2]["key"], "qualified")
         self.assertEqual(result["stages"][2]["prospects"][0]["name"], "Qualified lead")
         self.assertFalse(any(stage["terminal"] for stage in result["stages"]))
@@ -203,6 +208,7 @@ class CRMTest(unittest.TestCase):
             self.conn, "imago", "Acme revenue team", "codex",
             company_id=company["id"], contact_id=contact["id"], fit_score=90,
             pain_points="Forecast calls are unreliable", source_url="https://acme.example",
+            custom={"signal_tier": "B", "priority_weight": 72},
         )
         service.add_note(
             self.conn, "imago", "codex", "Hiring revenue operations staff.",
@@ -212,9 +218,52 @@ class CRMTest(unittest.TestCase):
         research = service.research_brief(self.conn, prospect["id"])
         outreach = service.outreach_brief(self.conn, prospect["id"])
         self.assertEqual(queue["queue"][0]["recommended_action"], "prepare_outreach")
+        self.assertEqual(queue["queue"][0]["signal_tier"], "B")
+        self.assertEqual(queue["queue"][0]["priority_weight"], 72)
         self.assertEqual(len(research["verified_facts"]), 1)
         self.assertTrue(outreach["ready"])
         self.assertEqual(outreach["suggested_channel"], "email")
+
+    def test_public_business_route_can_make_account_ready_without_named_contact(self) -> None:
+        company = service.create_company(self.conn, "imago", "Route Co", "codex", domain="route.example")
+        prospect = service.create_prospect(
+            self.conn, "imago", "Route test", "codex", company_id=company["id"],
+            source_url="https://route.example/about", pain_points="A recurring workflow may exist.",
+            custom={"signal_tier": "C", "priority_weight": 50,
+                    "public_business_route": "https://route.example/contact"},
+        )
+
+        queue = service.sdr_queue(self.conn, "imago")
+        research = service.research_brief(self.conn, prospect["id"])
+        outreach = service.outreach_brief(self.conn, prospect["id"])
+
+        self.assertTrue(queue["queue"][0]["contactable"])
+        self.assertEqual(queue["queue"][0]["recommended_action"], "prepare_outreach")
+        self.assertTrue(research["ready_for_outreach"])
+        self.assertTrue(outreach["ready"])
+        self.assertEqual(outreach["suggested_channel"], "business_route")
+
+    def test_experiment_report_groups_logged_feedback_by_signal_cohort(self) -> None:
+        company = service.create_company(self.conn, "imago", "Acme", "codex", domain="acme.example")
+        prospect = service.create_prospect(
+            self.conn, "imago", "Acme test", "codex", company_id=company["id"],
+            custom={"experiment_id": "test-30", "cohort": "B", "signal_tier": "B", "priority_weight": 70},
+        )
+        service.log_interaction(
+            self.conn, "imago", "codex", "email", "outbound", "Sent test",
+            prospect_id=prospect["id"], outcome="sent",
+        )
+        service.log_interaction(
+            self.conn, "imago", "codex", "email", "inbound", "Confirmed recurring intake work",
+            prospect_id=prospect["id"], outcome="workflow_confirmed",
+        )
+
+        report = service.experiment_report(self.conn, "imago", "test-30")
+
+        self.assertEqual(report["accounts"], 1)
+        self.assertEqual(report["cohorts"]["B"]["contacted"], 1)
+        self.assertEqual(report["cohorts"]["B"]["replied"], 1)
+        self.assertEqual(report["cohorts"]["B"]["workflow_confirmed"], 1)
 
     def test_conversion_report_uses_stage_history(self) -> None:
         prospect = service.create_prospect(self.conn, "imago", "Converted", "codex")

@@ -272,6 +272,35 @@ def migrate(conn: sqlite3.Connection) -> None:
         )
         conn.execute("PRAGMA user_version = 3")
         conn.commit()
+        version = 3
+    if version < 4:
+        conn.executescript(
+            """
+            CREATE TABLE enrichment_attempts (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                status TEXT NOT NULL CHECK (status IN
+                    ('running', 'ready', 'manual_review', 'unresolved', 'no_email', 'pending', 'failed', 'applied')),
+                review_state TEXT NOT NULL CHECK (review_state IN
+                    ('not_applicable', 'pending_approval', 'manual_review', 'applied')),
+                input_json TEXT NOT NULL,
+                identity_json TEXT NOT NULL DEFAULT '{}',
+                providers_json TEXT NOT NULL DEFAULT '[]',
+                proposed_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                created_by TEXT NOT NULL,
+                applied_at TEXT,
+                applied_by TEXT
+            );
+            CREATE INDEX idx_enrichment_attempts_contact
+                ON enrichment_attempts(contact_id, created_at DESC);
+            """
+        )
+        conn.execute("PRAGMA user_version = 4")
+        conn.commit()
 
 
 def row_dict(row: sqlite3.Row | None) -> dict | None:

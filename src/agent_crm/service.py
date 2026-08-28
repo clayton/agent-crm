@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from . import enrichment
 from .db import row_dict, transaction
 
 
@@ -191,7 +192,143 @@ def get_contact(conn: sqlite3.Connection, contact_id: str) -> dict:
         "SELECT p.*, s.key AS stage FROM prospects p JOIN pipeline_stages s ON s.id=p.stage_id WHERE p.contact_id=? ORDER BY p.updated_at DESC",
         (contact_id,),
     )]
+    result["enrichment_attempts"] = [
+        _public_enrichment(row_dict(r) or {}) for r in conn.execute(
+            "SELECT * FROM enrichment_attempts WHERE contact_id=? ORDER BY created_at DESC", (contact_id,),
+        )
+    ]
     return result
+
+
+def _masked_email(value: str | None) -> str | None:
+    if not value or "@" not in value:
+        return value
+    local, domain = value.split("@", 1)
+    return f"{local[:1]}{'*' * max(3, len(local) - 1)}@{domain}"
+
+
+def _mask_enrichment_emails(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _masked_email(item) if key == "email" else _mask_enrichment_emails(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_enrichment_emails(item) for item in value]
+    return value
+
+
+def _public_enrichment(attempt: dict) -> dict:
+    return _mask_enrichment_emails(dict(attempt))
+
+
+def _enrichment_attempt(conn: sqlite3.Connection, attempt_id: str, public: bool = True) -> dict:
+    row = conn.execute("SELECT * FROM enrichment_attempts WHERE id=?", (attempt_id,)).fetchone()
+    if not row:
+        raise CRMError(f"Enrichment attempt not found: {attempt_id}")
+    result = row_dict(row) or {}
+    return _public_enrichment(result) if public else result
+
+
+def enrich_contact(conn: sqlite3.Connection, contact_id: str, actor: str,
+                   fullenrich_polls: int = 2, poll_interval: int = 300) -> dict:
+    actor = require_actor(actor)
+    contact = _get_entity(conn, "contacts", contact_id)
+    company_id = contact.get("company_id")
+    if not company_id:
+        raise CRMError("Contact enrichment requires a linked company.")
+    company = _get_entity(conn, "companies", company_id)
+    attempt_id, timestamp = uid("enr"), now()
+    snapshot = {"contact": contact, "company": company}
+    with transaction(conn):
+        conn.execute(
+            """INSERT INTO enrichment_attempts
+               (id, project_id, contact_id, status, review_state, input_json, created_at, updated_at, created_by)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (attempt_id, contact["project_id"], contact_id, "running", "not_applicable",
+             json.dumps(snapshot, sort_keys=True), timestamp, timestamp, actor),
+        )
+        activity(conn, contact["project_id"], "contact", contact_id, "enrichment_started", actor,
+                 {"attempt_id": attempt_id})
+
+    identity, providers, proposed = {}, [], {}
+    status, review_state, error = "failed", "not_applicable", None
+    try:
+        identity = enrichment.resolve_identity(contact, company)
+        if identity["status"] != "resolved":
+            status = "unresolved"
+        else:
+            if not contact.get("last_name"):
+                proposed.update(first_name=identity["first_name"], last_name=identity["last_name"],
+                                full_name=identity["full_name"])
+            if identity.get("linkedin_url") and not contact.get("linkedin_url"):
+                proposed["linkedin_url"] = identity["linkedin_url"]
+            domain = company.get("domain") or enrichment._host(company.get("website") or "")
+            found = enrichment.hunter(identity, domain)
+            providers.append(found)
+            if not found.get("email"):
+                found = enrichment.fullenrich(identity, domain, contact_id, fullenrich_polls, poll_interval)
+                providers.append(found)
+            email = found.get("email")
+            raw_status = str(found.get("raw_status") or "").lower()
+            if found.get("pending"):
+                status = "pending"
+            elif not email:
+                status = "no_email"
+            elif contact.get("email") and contact["email"].lower() != email.lower():
+                status, review_state = "manual_review", "manual_review"
+            else:
+                if not contact.get("email"):
+                    proposed["email"] = email
+                uncertain = found.get("provider") == "fullenrich" or raw_status in {
+                    "accept_all", "unknown", "high_probability", "probably_deliverable",
+                }
+                status = "manual_review" if uncertain else "ready"
+                review_state = "manual_review" if uncertain else "pending_approval"
+                if not proposed and review_state == "pending_approval":
+                    review_state = "not_applicable"
+    except enrichment.EnrichmentError as exc:
+        error = str(exc)
+
+    with transaction(conn):
+        conn.execute(
+            """UPDATE enrichment_attempts
+               SET status=?, review_state=?, identity_json=?, providers_json=?, proposed_json=?, error=?, updated_at=?
+               WHERE id=?""",
+            (status, review_state, json.dumps(identity, sort_keys=True), json.dumps(providers, sort_keys=True),
+             json.dumps(proposed, sort_keys=True), error, now(), attempt_id),
+        )
+        activity(conn, contact["project_id"], "contact", contact_id, "enrichment_finished", actor,
+                 {"attempt_id": attempt_id, "status": status, "review_state": review_state})
+    return _enrichment_attempt(conn, attempt_id)
+
+
+def apply_contact_enrichment(conn: sqlite3.Connection, attempt_id: str, actor: str,
+                             approve_manual_review: bool = False) -> dict:
+    actor = require_actor(actor)
+    attempt = _enrichment_attempt(conn, attempt_id, public=False)
+    allowed = attempt["review_state"] == "pending_approval" or (
+        attempt["review_state"] == "manual_review" and approve_manual_review
+    )
+    if not allowed:
+        raise CRMError("Enrichment must be pending approval, or manual review must be explicitly approved.")
+    contact = _get_entity(conn, "contacts", attempt["contact_id"])
+    proposed = attempt.get("proposed") or {}
+    fields = {}
+    for key, value in proposed.items():
+        if key not in CONTACT_FIELDS:
+            continue
+        if not contact.get(key) or (key in {"full_name", "first_name"} and not contact.get("last_name")):
+            fields[key] = value
+    if not fields:
+        raise CRMError("No safe enrichment fields remain to apply.")
+    updated = update_contact(conn, contact["id"], actor, fields)
+    timestamp = now()
+    with transaction(conn):
+        conn.execute(
+            "UPDATE enrichment_attempts SET status='applied', review_state='applied', applied_at=?, applied_by=?, updated_at=? WHERE id=?",
+            (timestamp, actor, timestamp, attempt_id),
+        )
+        activity(conn, contact["project_id"], "contact", contact["id"], "enrichment_applied", actor,
+                 {"attempt_id": attempt_id, "fields": sorted(fields)})
+    return {"attempt": _enrichment_attempt(conn, attempt_id), "contact": updated, "applied_fields": sorted(fields)}
 
 
 def _list_entities(conn: sqlite3.Connection, table: str, project: str, limit: int) -> list[dict]:
@@ -624,7 +761,7 @@ def pipeline(conn: sqlite3.Connection, project: str, include_terminal: bool = Fa
             """SELECT p.id, p.name, p.owner, p.priority, p.fit_score, p.next_contact_at,
                       p.last_contacted_at, p.updated_at, p.version, p.amount,
                       p.currency, p.expected_close_at, p.forecast_category,
-                      p.probability, p.next_step, p.next_step_due_at,
+                      p.probability, p.next_step, p.next_step_due_at, p.custom_json,
                       c.full_name AS contact_name, co.name AS company_name
                FROM prospects p
                LEFT JOIN contacts c ON c.id=p.contact_id
@@ -635,6 +772,9 @@ def pipeline(conn: sqlite3.Connection, project: str, include_terminal: bool = Fa
                         p.updated_at DESC""",
             (stage["id"],),
         )]
+        for prospect in prospects:
+            prospect["signal_tier"], prospect["priority_weight"] = _signal_priority(prospect)
+        prospects.sort(key=lambda item: (-item["priority_weight"], item["name"]))
         stages.append({
             "key": stage["key"],
             "name": stage["name"],
@@ -1038,11 +1178,22 @@ def cro_review(conn: sqlite3.Connection, project: str, period: str | None = None
     }
 
 
+SIGNAL_WEIGHTS = {"S": 100, "A": 85, "B": 70, "C": 50, "D": 25, "F": 0}
+
+
+def _signal_priority(item: dict) -> tuple[str | None, int]:
+    custom = item.get("custom") or {}
+    tier = custom.get("signal_tier")
+    default = SIGNAL_WEIGHTS.get(tier, 0)
+    weight = custom.get("priority_weight", default)
+    return tier, max(0, min(int(weight), 100))
+
+
 def sdr_queue(conn: sqlite3.Connection, project: str, limit: int = 25) -> dict:
     project_row = resolve_project(conn, project)
     rows = [row_dict(row) or {} for row in conn.execute(
         """SELECT p.id, p.name, p.stage_id, p.fit_score, p.priority, p.source_url,
-                  p.pain_points, p.qualification_notes, p.last_contacted_at,
+                  p.pain_points, p.qualification_notes, p.last_contacted_at, p.custom_json,
                   s.key AS stage, c.full_name AS contact_name, c.email, c.phone,
                   c.title, co.name AS company_name, co.domain, co.industry
            FROM prospects p JOIN pipeline_stages s ON s.id=p.stage_id
@@ -1054,34 +1205,98 @@ def sdr_queue(conn: sqlite3.Connection, project: str, limit: int = 25) -> dict:
     )]
     queue = []
     for item in rows:
-        completeness = sum(bool(item.get(key)) for key in
-                           ("company_name", "domain", "contact_name", "title", "email", "pain_points", "source_url"))
-        contactable = bool(item.get("email") or item.get("phone"))
-        score = (item.get("fit_score") or 0) + completeness * 5 + (15 if contactable else 0)
-        missing = [label for key, label in (
-            ("company_name", "company"), ("domain", "company domain"), ("contact_name", "contact"),
-            ("title", "contact title"), ("email", "email"), ("pain_points", "pain hypothesis"),
-            ("source_url", "source"),
-        ) if not item.get(key)]
+        custom = item.get("custom") or {}
+        public_business_route = custom.get("public_business_route")
+        contactable = bool(item.get("email") or item.get("phone") or public_business_route)
+        completeness = sum(bool(value) for value in (
+            item.get("company_name"), item.get("domain"), item.get("contact_name"), item.get("title"),
+            item.get("pain_points"), item.get("source_url"), contactable,
+        ))
+        signal_tier, priority_weight = _signal_priority(item)
+        score = priority_weight + completeness * 2 + (10 if contactable else 0) + (item.get("fit_score") or 0) // 20
+        missing = [label for value, label in (
+            (item.get("company_name"), "company"), (item.get("domain"), "company domain"),
+            (item.get("contact_name"), "contact"), (item.get("title"), "contact title"),
+            (contactable, "public business route"), (item.get("pain_points"), "pain hypothesis"),
+            (item.get("source_url"), "source"),
+        ) if not value]
+        core_ready = all((item.get("company_name"), item.get("domain"), item.get("pain_points"), item.get("source_url")))
         queue.append({
-            **item, "score": min(score, 100), "research_completeness": round(completeness / 7, 2),
+            **item, "signal_tier": signal_tier, "priority_weight": priority_weight,
+            "public_business_route": public_business_route,
+            "score": min(score, 100), "research_completeness": round(completeness / 7, 2),
             "contactable": contactable, "missing": missing,
-            "recommended_action": "prepare_outreach" if contactable and completeness >= 5 else "enrich",
+            "recommended_action": "prepare_outreach" if contactable and core_ready else "enrich",
         })
     queue.sort(key=lambda item: (-item["score"], item["name"]))
     return {"project": {"id": project_row["id"], "slug": project_row["slug"], "name": project_row["name"]},
             "queue": queue[:min(max(limit, 1), 100)], "count": min(len(queue), limit)}
 
 
+EXPERIMENT_OUTCOMES = (
+    "meaningful_reply", "workflow_confirmed", "fit_call_booked", "fit_call_held",
+    "qualified_opportunity", "paid_blueprint", "not_a_fit",
+)
+
+
+def experiment_report(conn: sqlite3.Connection, project: str, experiment_id: str) -> dict:
+    project_row = resolve_project(conn, project)
+    rows = [row_dict(row) or {} for row in conn.execute(
+        """SELECT p.id, p.name, p.custom_json, s.key AS stage, co.name AS company_name
+           FROM prospects p JOIN pipeline_stages s ON s.id=p.stage_id
+           LEFT JOIN companies co ON co.id=p.company_id
+           WHERE p.project_id=? AND json_extract(p.custom_json, '$.experiment_id')=?""",
+        (project_row["id"], experiment_id),
+    )]
+    prospects = []
+    for item in rows:
+        interactions = [row_dict(row) or {} for row in conn.execute(
+            "SELECT direction, outcome, occurred_at FROM interactions WHERE prospect_id=? ORDER BY occurred_at",
+            (item["id"],),
+        )]
+        outcomes = {entry["outcome"] for entry in interactions if entry.get("outcome")}
+        custom = item.get("custom") or {}
+        prospects.append({
+            "prospect_id": item["id"], "prospect": item["name"], "company": item.get("company_name"),
+            "cohort": custom.get("cohort"), "signal_tier": custom.get("signal_tier"),
+            "priority_weight": custom.get("priority_weight", 0), "stage": item["stage"],
+            "contacted": any(entry["direction"] == "outbound" for entry in interactions),
+            "replied": any(entry["direction"] == "inbound" for entry in interactions),
+            **{outcome: outcome in outcomes for outcome in EXPERIMENT_OUTCOMES},
+        })
+    cohorts = {}
+    for cohort in sorted({item["cohort"] for item in prospects if item.get("cohort")}):
+        selected = [item for item in prospects if item["cohort"] == cohort]
+        cohorts[cohort] = {
+            "accounts": len(selected),
+            "contacted": sum(item["contacted"] for item in selected),
+            "replied": sum(item["replied"] for item in selected),
+            **{outcome: sum(item[outcome] for item in selected) for outcome in EXPERIMENT_OUTCOMES},
+        }
+    return {
+        "project": {"id": project_row["id"], "slug": project_row["slug"], "name": project_row["name"]},
+        "experiment_id": experiment_id, "accounts": len(prospects), "cohorts": cohorts,
+        "totals": {
+            "contacted": sum(item["contacted"] for item in prospects),
+            "replied": sum(item["replied"] for item in prospects),
+            **{outcome: sum(item[outcome] for item in prospects) for outcome in EXPERIMENT_OUTCOMES},
+        },
+        "prospects": sorted(prospects, key=lambda item: (-item["priority_weight"], item["prospect"])),
+    }
+
+
 def research_brief(conn: sqlite3.Connection, prospect_id: str) -> dict:
     prospect = get_prospect(conn, prospect_id)
     sourced_notes = [note for note in prospect["notes"] if note.get("source_url")]
     unsourced_notes = [note for note in prospect["notes"] if not note.get("source_url")]
-    missing = [label for key, label in (
-        ("company_name", "company"), ("contact_name", "contact"), ("source_url", "prospect source"),
-        ("pain_points", "pain hypothesis"), ("needs", "needs"), ("authority", "buying authority"),
-        ("timing", "timing"),
-    ) if not prospect.get(key)]
+    public_business_route = (prospect.get("custom") or {}).get("public_business_route")
+    has_route = bool(prospect.get("contact_email") or prospect.get("contact_phone") or public_business_route)
+    missing = [label for value, label in (
+        (prospect.get("company_name"), "company"), (prospect.get("contact_name"), "contact"),
+        (prospect.get("source_url"), "prospect source"), (prospect.get("pain_points"), "pain hypothesis"),
+        (prospect.get("needs"), "needs"), (prospect.get("authority"), "buying authority"),
+        (prospect.get("timing"), "timing"), (has_route, "public business route"),
+    ) if not value]
     return {
         "prospect": {key: prospect.get(key) for key in
                      ("id", "name", "stage", "company_name", "contact_name", "fit_score", "source_url")},
@@ -1089,7 +1304,8 @@ def research_brief(conn: sqlite3.Connection, prospect_id: str) -> dict:
         "unsourced_context": unsourced_notes,
         "missing_information": missing,
         "research_questions": [f"Find and verify: {item}." for item in missing],
-        "ready_for_outreach": not any(item in missing for item in ("company", "contact", "pain hypothesis")),
+        "public_business_route": public_business_route,
+        "ready_for_outreach": not any(item in missing for item in ("company", "pain hypothesis", "public business route")),
     }
 
 
@@ -1097,17 +1313,21 @@ def outreach_brief(conn: sqlite3.Connection, prospect_id: str) -> dict:
     prospect = get_prospect(conn, prospect_id)
     research = research_brief(conn, prospect_id)
     prior = prospect["interactions"][:5]
+    public_business_route = (prospect.get("custom") or {}).get("public_business_route")
+    has_route = bool(prospect.get("contact_email") or prospect.get("contact_phone") or public_business_route)
     missing = []
-    if not prospect.get("contact_name"):
-        missing.append("contact")
     if not prospect.get("pain_points"):
         missing.append("pain hypothesis")
+    if not has_route:
+        missing.append("public business route")
     return {
         "prospect": research["prospect"],
         "recommended_angle": prospect.get("pain_points") or prospect.get("needs"),
         "qualification_context": prospect.get("qualification_notes"),
         "suggested_channel": "email" if prospect.get("contact_email") else
-                             ("call" if prospect.get("contact_phone") else "research"),
+                             ("call" if prospect.get("contact_phone") else
+                              ("business_route" if public_business_route else "research")),
+        "public_business_route": public_business_route,
         "prior_interactions": prior,
         "verified_facts": research["verified_facts"],
         "missing_prerequisites": missing,

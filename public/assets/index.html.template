@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Agent CRM · Pipeline</title>
+  <!-- CRM_STYLES -->
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <div class="loading">Loading your pipeline…</div>
+  </div>
+  <dialog id="detail-dialog" class="detail-dialog"></dialog>
+  <!-- CRM_DATA -->
+  <!-- CRM_SCRIPT -->
+</body>
+</html>

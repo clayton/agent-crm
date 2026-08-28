@@ -7,6 +7,23 @@ description: Operate a project-isolated, machine-local B2B CRM for prospects, op
 
 Use the MCP tools named `crm_*` when available. Otherwise call `crm`; it emits JSON on stdout and errors as JSON on stderr.
 
+When cloud MCP is configured, prefer it over local stdio:
+
+```json
+{
+  "mcpServers": {
+    "agent-crm": {
+      "url": "https://crm-agent.services.c18h.net/mcp",
+      "auth": "oauth",
+      "protocolVersion": "2026-07-28",
+      "lifecycle": "lazy"
+    }
+  }
+}
+```
+
+For headless automation against the REST API, set `CRM_API_URL`, `CF_ACCESS_CLIENT_ID`, and `CF_ACCESS_CLIENT_SECRET`, then use the same `crm` CLI commands in remote mode.
+
 ## Rules
 
 - Treat each project as an isolated CRM workspace. Never search or mutate a different project unless the user requests it.
@@ -25,7 +42,9 @@ Use the MCP tools named `crm_*` when available. Otherwise call `crm`; it emits J
 - A prospect is not forecastable merely because it exists. Use `crm_qualify_opportunity` only when amount, expected close date, and a concrete next step are supportable.
 - For revenue questions, use `crm_forecast` for the numbers, `crm_conversions` for historical conversion context, and `crm_cro_review` when the user wants assumptions challenged. Preserve warnings and evidence; do not improve the forecast by inventing missing data.
 - Use `crm_pipeline_risks` to find unscheduled, unowned, stale, overdue, uncontactable, or incomplete work. Create repair tasks only when explicitly requested.
-- Use `crm_sdr_queue` to prioritize top-of-funnel work. Use `crm_research_brief` before enrichment or research and `crm_outreach_brief` before drafting outreach.
+- Use `crm_sdr_queue` to prioritize top-of-funnel work. Signal experiments store `signal_tier` and `priority_weight` in prospect custom data; queue and pipeline reads expose both. Use `crm experiment-report PROJECT EXPERIMENT_ID` to compare logged outcomes by cohort. Use `crm_research_brief` before enrichment or research and `crm_outreach_brief` before drafting outreach.
+- For general person/company enrichment, use `crm contact enrich CONTACT_ID --actor ACTOR`. Review its evidence and masked proposal. Apply a clean result through `crm contact apply-enrichment ATTEMPT_ID --actor ACTOR`. After reviewing a flagged result, record explicit approval with `--approve-manual-review`.
+- Enrichment must stop when identity remains unresolved. Never infer a surname or manufacture an email. Hunter `accept_all`, FullEnrich vendor deliverability claims, conflicts, and weak evidence need human review.
 - Research and outreach briefs do not authorize contacting anyone. Agent CRM remains a system of record and preparation tool.
 - Read tools return structured data. Choose formatting that fits the conversation rather than reproducing raw JSON.
 - When the user asks to see or review the CRM visually, use `crm dashboard serve`. For a portable point-in-time report, use `crm dashboard export --output PATH`. The dashboard is read-only; agents remain the only writers.
@@ -71,6 +90,8 @@ crm forecast imago --period 2026-Q3
 crm review imago --period 2026-Q3
 crm risks imago
 crm sdr-queue imago
+crm contact enrich con_ID --actor codex
+crm contact apply-enrichment enr_ID --actor codex
 ```
 
 Use `crm --help` and subcommand `--help` for the complete CLI contract.
