@@ -67,6 +67,23 @@ def resolve_project(conn: sqlite3.Connection, project: str) -> dict:
     return row_dict(row) or {}
 
 
+def _normalize_us_phone(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise CRMError("Contact phone must be a valid US number.")
+    phone = value.strip()
+    if not phone:
+        return None
+    if re.search(r"[^\d\s()+.-]", phone) or ("+" in phone and (phone.count("+") != 1 or not phone.startswith("+1"))):
+        raise CRMError("Contact phone must be a valid US number.")
+    digits = re.sub(r"\D", "", phone)
+    national = digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
+    if len(national) != 10 or phone.startswith("+") and not digits.startswith("1") or not re.fullmatch(r"(?![2-9]11)[2-9]\d{2}(?![2-9]11)[2-9]\d{6}", national):
+        raise CRMError("Contact phone must be a valid US number.")
+    return f"+1{national}"
+
+
 def validate_link(conn: sqlite3.Connection, table: str, entity_id: str | None, project_id: str) -> None:
     if not entity_id:
         return
@@ -159,6 +176,8 @@ def create_company(conn: sqlite3.Connection, project: str, name: str, actor: str
 
 def create_contact(conn: sqlite3.Connection, project: str, full_name: str, actor: str, **fields: Any) -> dict:
     tags, custom = fields.pop("tags", None), fields.pop("custom", None)
+    if "phone" in fields:
+        fields["phone"] = _normalize_us_phone(fields["phone"])
     validate_link(conn, "companies", fields.get("company_id"), resolve_project(conn, project)["id"])
     return _create_entity(conn, "contacts", "con", project, actor, {"full_name": full_name, **fields}, CONTACT_FIELDS, tags, custom)
 
@@ -371,6 +390,8 @@ def update_company(conn: sqlite3.Connection, company_id: str, actor: str, fields
 
 def update_contact(conn: sqlite3.Connection, contact_id: str, actor: str, fields: dict[str, Any]) -> dict:
     current = _get_entity(conn, "contacts", contact_id)
+    if "phone" in fields:
+        fields["phone"] = _normalize_us_phone(fields["phone"])
     validate_link(conn, "companies", fields.get("company_id"), current["project_id"])
     return _update_entity(conn, "contacts", contact_id, actor, fields, CONTACT_FIELDS)
 

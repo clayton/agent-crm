@@ -37,6 +37,21 @@ describe("agent-crm worker", () => {
     expect(listed.some((p) => p.id === project.id)).toBe(true);
   });
 
+  it("accepts only valid US contact phone numbers", async () => {
+    await service.createProject(env.DB, "Phone", "phone:actor", "phone");
+    const contact = await service.createContact(env.DB, "phone", "Jane Buyer", "phone:actor", {
+      phone: "(602) 234-5678",
+    });
+    expect(contact.phone).toBe("+16022345678");
+    await expect(
+      service.updateContact(env.DB, contact.id as string, "phone:actor", { phone: "+11373853860" }),
+    ).rejects.toThrow("valid US number");
+    await expect(
+      service.createContact(env.DB, "phone", "UK Contact", "phone:actor", { phone: "+442071838750" }),
+    ).rejects.toThrow("valid US number");
+    expect((await service.getContact(env.DB, contact.id as string)).phone).toBe("+16022345678");
+  });
+
   it("api creates company with idempotency", async () => {
     await service.createProject(env.DB, "API", "api:actor", "api-proj");
     const body = JSON.stringify({ project: "api-proj", name: "Acme" });

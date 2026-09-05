@@ -44,6 +44,22 @@ const PROSPECT_FIELDS = new Set([
 
 const SIGNAL_WEIGHTS: Record<string, number> = { S: 100, A: 85, B: 70, C: 50, D: 25, F: 0 };
 
+function normalizeUsPhone(value: unknown): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") throw new CRMError("Contact phone must be a valid US number.");
+  const phone = value.trim();
+  if (!phone) return null;
+  if (/[^\d\s()+.-]/.test(phone) || (phone.includes("+") && (phone.match(/\+/g)?.length !== 1 || !phone.startsWith("+1")))) {
+    throw new CRMError("Contact phone must be a valid US number.");
+  }
+  const digits = phone.replace(/\D/g, "");
+  const national = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+  if (!/^(?![2-9]11)[2-9]\d{2}(?![2-9]11)[2-9]\d{6}$/.test(national)) {
+    throw new CRMError("Contact phone must be a valid US number.");
+  }
+  return `+1${national}`;
+}
+
 const EXPERIMENT_OUTCOMES = [
   "meaningful_reply", "workflow_confirmed", "fit_call_booked", "fit_call_held",
   "qualified_opportunity", "paid_blueprint", "not_a_fit",
@@ -257,6 +273,7 @@ export async function createContact(
   fields: Record<string, unknown> = {},
 ): Promise<Row> {
   const { tags, custom, ...rest } = fields;
+  if ("phone" in rest) rest.phone = normalizeUsPhone(rest.phone);
   const projectRow = await resolveProject(db, project);
   await validateLink(db, "companies", rest.company_id as string | undefined, String(projectRow.id));
   return createEntity(
@@ -413,6 +430,7 @@ export async function updateContact(
   fields: Record<string, unknown>,
 ): Promise<Row> {
   const current = await getEntity(db, "contacts", contactId);
+  if ("phone" in fields) fields.phone = normalizeUsPhone(fields.phone);
   await validateLink(db, "companies", fields.company_id as string | undefined, String(current.project_id));
   return updateEntity(db, "contacts", contactId, actor, fields, CONTACT_FIELDS);
 }

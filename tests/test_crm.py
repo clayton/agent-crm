@@ -59,6 +59,17 @@ class CRMTest(unittest.TestCase):
         with self.assertRaisesRegex(service.CRMError, "actor is required"):
             service.create_company(self.conn, "imago", "No Actor Inc", "")
 
+    def test_contact_phone_accepts_only_valid_us_numbers(self) -> None:
+        contact = service.create_contact(
+            self.conn, "imago", "Jane Buyer", "codex", phone="(602) 234-5678",
+        )
+        self.assertEqual(contact["phone"], "+16022345678")
+        with self.assertRaisesRegex(service.CRMError, "valid US number"):
+            service.update_contact(self.conn, contact["id"], "codex", {"phone": "+11373853860"})
+        with self.assertRaisesRegex(service.CRMError, "valid US number"):
+            service.create_contact(self.conn, "imago", "UK Contact", "codex", phone="+442071838750")
+        self.assertEqual(service.get_contact(self.conn, contact["id"])["phone"], "+16022345678")
+
     def test_project_isolation(self) -> None:
         service.create_project(self.conn, "Other", "codex", "other")
         company = service.create_company(self.conn, "imago", "Same Name", "codex", domain="same.example")
